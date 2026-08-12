@@ -28,11 +28,12 @@ func TestSelectRecommendedServer(t *testing.T) {
 		{HostName: "jp-zero-users", IP: "0.0.0.0", CountryLong: "Japan", CountryShort: "JP", TotalUsers: 0, Uptime: 1, NumVPNSessions: 1, OpenVPNConfigDataBase64: "cfg0"},
 		{HostName: "jp-more-users", IP: "1.1.1.1", CountryLong: "Japan", CountryShort: "JP", TotalUsers: 20, Uptime: 10, NumVPNSessions: 1, OpenVPNConfigDataBase64: "cfg1"},
 		{HostName: "kr-top", IP: "2.2.2.2", CountryLong: "Korea Republic of", CountryShort: "KR", TotalUsers: 1, Uptime: 1, NumVPNSessions: 1, OpenVPNConfigDataBase64: "cfg2"},
+		{HostName: "ru-top", IP: "9.9.9.9", CountryLong: "Russia", CountryShort: "RU", TotalUsers: 1, Uptime: 1, NumVPNSessions: 1, OpenVPNConfigDataBase64: "cfg-ru"},
 		{HostName: "jp-best", IP: "3.3.3.3", CountryLong: "Japan", CountryShort: "JP", TotalUsers: 5, Uptime: 3, NumVPNSessions: 2, OpenVPNConfigDataBase64: "cfg3"},
 		{HostName: "jp-higher-uptime", IP: "4.4.4.4", CountryLong: "Japan", CountryShort: "JP", TotalUsers: 5, Uptime: 9, NumVPNSessions: 1, OpenVPNConfigDataBase64: "cfg4"},
 	}
 
-	server, ok := selectRecommendedServer(servers, "", "JP")
+	server, ok := selectRecommendedServer(servers, "", "")
 	if !ok {
 		t.Fatal("selectRecommendedServer() ok = false, want true")
 	}
@@ -169,7 +170,7 @@ func TestHandleVPNConnectForwardsLatestServerPayload(t *testing.T) {
 	}
 }
 
-func TestHandleVPNConnectRecommendedConnectsBestFilteredServer(t *testing.T) {
+func TestHandleVPNConnectRecommendedSkipsRUServer(t *testing.T) {
 	type connectPayload struct {
 		Server vpngate.Server `json:"server"`
 	}
@@ -201,15 +202,14 @@ func TestHandleVPNConnectRecommendedConnectsBestFilteredServer(t *testing.T) {
 		"#HostName,IP,Score,Ping,Speed,CountryLong,CountryShort,NumVpnSessions,Uptime,TotalUsers,TotalTraffic,LogType,Operator,Message,OpenVPN_ConfigData_Base64",
 		"jp-zero,0.0.0.0,999,1,999,Japan,JP,1,1,0,1000,2weeks,Operator Zero,,ZHVtbXk=",
 		"jp-mid,1.1.1.1,150,20,300,Japan,JP,10,10,100,1000,2weeks,Operator One,,ZHVtbXk=",
+		"ru-top,9.9.9.9,500,1,900,Russia,RU,1,1,1,1000,2weeks,Operator RU,,ZHVtbXk=",
 		"kr-top,2.2.2.2,400,30,500,Korea Republic of,KR,1,10,1,1000,2weeks,Operator Two,,ZHVtbXk=",
 		"jp-best,3.3.3.3,300,25,450,Japan,JP,2,3,5,1000,2weeks,Operator Three,,ZHVtbXk=",
 		"jp-higher-uptime,4.4.4.4,999,10,900,Japan,JP,1,9,5,1000,2weeks,Operator Four,,ZHVtbXk=",
 		"*",
 	}, "\n"), runnerServer.URL, runnerServer.Client())
 
-	form := url.Values{
-		"country": []string{"JP"},
-	}
+	form := url.Values{}
 	req := httptest.NewRequest(http.MethodPost, "/vpn/connect/recommended", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
 	req.Header.Set("Accept", "application/json")

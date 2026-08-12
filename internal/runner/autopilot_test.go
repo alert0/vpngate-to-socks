@@ -106,6 +106,7 @@ func TestSelectCandidatePrefersLowestUsersThenLowestUptimeThenLowestSessions(t *
 		{HostName: "blocked", IP: "1.1.1.1", TotalUsers: 1, Uptime: 1, NumVPNSessions: 1, OpenVPNConfigDataBase64: "blocked"},
 		{HostName: "no-config", IP: "2.2.2.2", TotalUsers: 1, Uptime: 1, NumVPNSessions: 1},
 		{HostName: "zero-users", IP: "3.3.3.3", TotalUsers: 0, Uptime: 1, NumVPNSessions: 1, OpenVPNConfigDataBase64: "cfg0"},
+		{HostName: "ru-best", IP: "3.3.3.4", TotalUsers: 1, Uptime: 1, NumVPNSessions: 1, CountryShort: "RU", OpenVPNConfigDataBase64: "cfg-ru"},
 		{HostName: "higher-users", IP: "4.4.4.4", TotalUsers: 20, Uptime: 1, NumVPNSessions: 1, OpenVPNConfigDataBase64: "cfg1"},
 		{HostName: "winner", IP: "5.5.5.5", TotalUsers: 5, Uptime: 3, NumVPNSessions: 2, OpenVPNConfigDataBase64: "cfg2"},
 		{HostName: "same-users-higher-uptime", IP: "6.6.6.6", TotalUsers: 5, Uptime: 9, NumVPNSessions: 1, OpenVPNConfigDataBase64: "cfg3"},

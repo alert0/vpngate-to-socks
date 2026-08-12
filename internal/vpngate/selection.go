@@ -6,9 +6,9 @@ import (
 )
 
 // IsRecommendedServer reports whether a server is eligible for automatic/recommended connection.
-// Servers without OpenVPN config or without any observed online users are skipped.
+// Servers without OpenVPN config, without any observed online users, or from RU are skipped.
 func IsRecommendedServer(server Server) bool {
-	return strings.TrimSpace(server.OpenVPNConfigDataBase64) != "" && server.TotalUsers > 0
+	return strings.TrimSpace(server.OpenVPNConfigDataBase64) != "" && server.TotalUsers > 0 && !strings.EqualFold(strings.TrimSpace(server.CountryShort), "RU")
 }
 
 // SortServersByRecommendation sorts servers by connection preference.

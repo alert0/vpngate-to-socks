@@ -11,6 +11,7 @@ func TestIsRecommendedServer(t *testing.T) {
 		{name: "valid server", server: Server{OpenVPNConfigDataBase64: "cfg", TotalUsers: 1}, want: true},
 		{name: "missing config", server: Server{TotalUsers: 1}, want: false},
 		{name: "zero users", server: Server{OpenVPNConfigDataBase64: "cfg", TotalUsers: 0}, want: false},
+		{name: "ru server", server: Server{OpenVPNConfigDataBase64: "cfg", TotalUsers: 1, CountryShort: "RU"}, want: false},
 	}
 
 	for _, tt := range tests {
