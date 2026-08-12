@@ -34,6 +34,7 @@ var allowedOpenVPNDirectives = map[string]struct{}{
 	"comp-lzo":        {},
 	"compress":        {},
 	"connect-timeout": {},
+	"data-ciphers":    {},
 	"dev":             {},
 	"float":           {},
 	"key-direction":   {},
@@ -240,6 +241,12 @@ func sanitizeOpenVPNConfig(raw string) (string, string, error) {
 		case "remote":
 			seenRemote = true
 		case "cipher":
+			if len(fields) > 1 {
+				cipher = fields[1]
+			}
+		case "data-ciphers":
+			// 与 cipher 指令同等对待：后出现的指令胜出，与 OpenVPN 实际解析顺序一致，
+			// 避免 CLI 用默认 AES-128-CBC 覆盖节点配置声明的 GCM 套件导致协商失败。
 			if len(fields) > 1 {
 				cipher = fields[1]
 			}

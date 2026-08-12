@@ -56,6 +56,23 @@ func TestSanitizeOpenVPNConfig(t *testing.T) {
 	}
 }
 
+func TestSanitizeOpenVPNConfigAcceptsDataCiphers(t *testing.T) {
+	config := sampleOpenVPNConfig + "data-ciphers AES-256-GCM:AES-128-GCM\n"
+
+	sanitized, cipher, err := sanitizeOpenVPNConfig(config)
+	if err != nil {
+		t.Fatalf("sanitizeOpenVPNConfig() error = %v", err)
+	}
+
+	if cipher != "AES-256-GCM:AES-128-GCM" {
+		t.Fatalf("cipher = %q, want %q", cipher, "AES-256-GCM:AES-128-GCM")
+	}
+
+	if !strings.Contains(sanitized, "data-ciphers AES-256-GCM:AES-128-GCM") {
+		t.Fatal("sanitized config should preserve data-ciphers directive")
+	}
+}
+
 func TestSanitizeOpenVPNConfigRejectsUnsafeDirective(t *testing.T) {
 	unsafeConfig := sampleOpenVPNConfig + "up /tmp/test.sh\n"
 
