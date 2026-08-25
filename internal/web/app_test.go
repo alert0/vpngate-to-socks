@@ -38,8 +38,8 @@ func TestSelectRecommendedServer(t *testing.T) {
 		t.Fatal("selectRecommendedServer() ok = false, want true")
 	}
 
-	if server.HostName != "jp-best" {
-		t.Fatalf("selectRecommendedServer() host = %q, want %q", server.HostName, "jp-best")
+	if server.HostName != "kr-top" {
+		t.Fatalf("selectRecommendedServer() host = %q, want %q", server.HostName, "kr-top")
 	}
 }
 
@@ -228,8 +228,8 @@ func TestHandleVPNConnectRecommendedSkipsRUServer(t *testing.T) {
 		t.Fatal("runner connect request was not received")
 	}
 
-	if received.Server.HostName != "jp-best" {
-		t.Fatalf("connected host = %q, want %q", received.Server.HostName, "jp-best")
+	if received.Server.HostName != "kr-top" {
+		t.Fatalf("connected host = %q, want %q", received.Server.HostName, "kr-top")
 	}
 
 	var response actionResponse
@@ -240,8 +240,8 @@ func TestHandleVPNConnectRecommendedSkipsRUServer(t *testing.T) {
 	if !response.OK {
 		t.Fatalf("handleVPNConnectRecommended() response.OK = false, error = %q", response.Error)
 	}
-	if !strings.Contains(response.Notice, "已开始连接推荐节点 jp-best") {
-		t.Fatalf("handleVPNConnectRecommended() notice = %q, want substring %q", response.Notice, "已开始连接推荐节点 jp-best")
+	if !strings.Contains(response.Notice, "已开始连接推荐节点 kr-top") {
+		t.Fatalf("handleVPNConnectRecommended() notice = %q, want substring %q", response.Notice, "已开始连接推荐节点 kr-top")
 	}
 }
 
