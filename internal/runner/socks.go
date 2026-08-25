@@ -62,6 +62,9 @@ func newSOCKSServer(logger *log.Logger, listenAddr string, allowConnect func() b
 }
 
 func (s *SOCKSServer) ListenAddr() string {
+	if s == nil {
+		return ""
+	}
 	return s.listenAddr
 }
 
@@ -77,18 +80,17 @@ func (s *SOCKSServer) DialAddr() string {
 
 	host := tcpAddr.IP.String()
 	if tcpAddr.IP == nil || tcpAddr.IP.IsUnspecified() {
-		if tcpAddr.IP != nil && tcpAddr.IP.To4() == nil {
-			host = "::1"
-		} else {
-			host = "127.0.0.1"
-		}
+		// Internal health probes should always use IPv4 loopback for wildcard
+		// listeners. This is stable even on systems where net.Listen("tcp",
+		// "0.0.0.0:...") is represented internally by an IPv6 wildcard socket.
+		host = "127.0.0.1"
 	}
 
 	return net.JoinHostPort(host, strconv.Itoa(tcpAddr.Port))
 }
 
 func (s *SOCKSServer) Close() error {
-	if s.listener == nil {
+	if s == nil || s.listener == nil {
 		return nil
 	}
 
