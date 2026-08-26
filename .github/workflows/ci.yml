@@ -17,6 +17,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Check deployment script
+        shell: bash
+        run: bash -n deploy.sh
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
