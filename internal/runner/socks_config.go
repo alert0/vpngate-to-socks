@@ -87,7 +87,7 @@ func normalizeSOCKSListenAddr(value, fallback string) string {
 	if fallback != "" {
 		return fallback
 	}
-	return "0.0.0.0:1080"
+	return "0.0.0.0:5888"
 }
 
 func validateStoredSOCKSConfig(cfg storedSOCKSConfig, allowUnconfigured bool) error {
@@ -119,7 +119,7 @@ func validateSOCKSListenAddr(addr string) error {
 	}
 	_, portText, err := net.SplitHostPort(addr)
 	if err != nil {
-		return fmt.Errorf("SOCKS5 监听地址格式无效，应类似 0.0.0.0:1080: %w", err)
+		return fmt.Errorf("SOCKS5 监听地址格式无效，应类似 0.0.0.0:5888: %w", err)
 	}
 	port, err := strconv.Atoi(portText)
 	if err != nil || port < 0 || port > 65535 {

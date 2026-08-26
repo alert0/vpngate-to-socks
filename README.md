@@ -9,10 +9,10 @@
 ```text
 Internet
    │
-   ├── 0.0.0.0:1080  SOCKS5
+   ├── 0.0.0.0:5888  SOCKS5
    │      └── RFC 1929 用户名/密码认证
    │
-   └── 0.0.0.0:8080  Web UI
+   └── 0.0.0.0:5777  Web UI
           └── 用户名/密码登录 + Session Cookie
                     │
                     ▼
@@ -61,7 +61,7 @@ Internet
 默认：
 
 ```text
-0.0.0.0:8080
+0.0.0.0:5777
 ```
 
 必须设置：
@@ -78,7 +78,7 @@ WEB_PASSWORD
 
 ```text
 Runner API: 127.0.0.1:18081
-SOCKS5:     0.0.0.0:1080
+SOCKS5:     0.0.0.0:5888
 ```
 
 SOCKS5 用户名密码可以通过环境变量提供初始值，也可以在 Web 后台首次设置。
@@ -110,7 +110,7 @@ cp .env.example .env
 SOCKS 账号密码可以先不设置，之后从 Web 后台设置：
 
 ```bash
-export SOCKS_LISTEN_ADDR='0.0.0.0:1080'
+export SOCKS_LISTEN_ADDR='0.0.0.0:5888'
 export RUNNER_CONTROL_ADDR='127.0.0.1:18081'
 go run ./cmd/vpngate-runner
 ```
@@ -127,7 +127,7 @@ export SOCKS_PASSWORD='replace-with-a-long-random-password'
 ### 启动 Web
 
 ```bash
-export WEB_LISTEN_ADDR='0.0.0.0:8080'
+export WEB_LISTEN_ADDR='0.0.0.0:5777'
 export WEB_USERNAME='admin'
 export WEB_PASSWORD='replace-with-another-long-random-password'
 export WEB_SESSION_TTL='12h'
@@ -138,8 +138,8 @@ go run .
 访问：
 
 ```text
-节点管理： http://服务器IP:8080/
-SOCKS 设置：http://服务器IP:8080/settings/socks
+节点管理： http://服务器IP:5777/
+SOCKS 设置：http://服务器IP:5777/settings/socks
 ```
 
 ## Web 后台配置 SOCKS5
@@ -152,7 +152,7 @@ SOCKS 设置：http://服务器IP:8080/settings/socks
 
 可以配置：
 
-- SOCKS5 监听地址，例如 `0.0.0.0:1080`
+- SOCKS5 监听地址，例如 `0.0.0.0:5888`
 - 端口
 - 用户名
 - 密码
@@ -219,7 +219,7 @@ https://服务器地址:8443
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `WEB_LISTEN_ADDR` | `0.0.0.0:8080` | Web 监听地址 |
+| `WEB_LISTEN_ADDR` | `0.0.0.0:5777` | Web 监听地址 |
 | `PORT` | 空 | 兼容旧配置；未设置 `WEB_LISTEN_ADDR` 时使用 |
 | `WEB_USERNAME` | `admin` | Web 登录用户名 |
 | `WEB_PASSWORD` | 无 | **必填**，Web 登录密码 |
@@ -233,7 +233,7 @@ https://服务器地址:8443
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `RUNNER_CONTROL_ADDR` | `127.0.0.1:18081` | Runner 控制接口，默认仅本机 |
-| `SOCKS_LISTEN_ADDR` | `0.0.0.0:1080` | 第一次运行时的 SOCKS5 默认监听地址 |
+| `SOCKS_LISTEN_ADDR` | `0.0.0.0:5888` | 第一次运行时的 SOCKS5 默认监听地址 |
 | `SOCKS_USERNAME` | 空 | 第一次运行时可选的 SOCKS5 初始用户名 |
 | `SOCKS_PASSWORD` | 空 | 第一次运行时可选的 SOCKS5 初始密码 |
 | `SOCKS_CONFIG_FILE` | 系统用户配置目录 | 后台 SOCKS5 配置持久化文件路径 |

@@ -19,9 +19,9 @@ WORKDIR /app
 COPY --from=builder /out/vpngate-web /usr/local/bin/vpngate-web
 COPY --from=builder /out/vpngate-runner /usr/local/bin/vpngate-runner
 
-ENV PORT=8080
+ENV PORT=5777
 
-EXPOSE 8080 1080
+EXPOSE 5777 5888
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD wget -q -O /dev/null "http://127.0.0.1:${PORT}/health" || exit 1
