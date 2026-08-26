@@ -24,6 +24,11 @@ type testResponse struct {
 	Error  string                    `json:"error,omitempty"`
 }
 
+type socksConfigResponse struct {
+	Config SOCKSConfig `json:"config"`
+	Error  string      `json:"error,omitempty"`
+}
+
 func NewAPIHandler(logger *log.Logger, runner *Runner) http.Handler {
 	if logger == nil {
 		logger = log.Default()
@@ -48,12 +53,40 @@ func NewAPIHandler(logger *log.Logger, runner *Runner) http.Handler {
 		writeJSON(w, http.StatusOK, runner.Status())
 	})
 
+	mux.HandleFunc("/config/socks", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet, http.MethodHead:
+			writeJSON(w, http.StatusOK, socksConfigResponse{Config: runner.SOCKSConfig()})
+			return
+		case http.MethodPost:
+			r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+			var req SOCKSConfigUpdate
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeJSON(w, http.StatusBadRequest, socksConfigResponse{Config: runner.SOCKSConfig(), Error: "读取 SOCKS5 配置失败"})
+				return
+			}
+
+			config, err := runner.UpdateSOCKSConfig(req)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, socksConfigResponse{Config: runner.SOCKSConfig(), Error: err.Error()})
+				return
+			}
+			logger.Printf("控制接口已更新 SOCKS5 配置：监听=%s 用户=%s", config.ListenAddr, config.Username)
+			writeJSON(w, http.StatusOK, socksConfigResponse{Config: config})
+			return
+		default:
+			http.Error(w, "仅支持 GET 或 POST 请求", http.StatusMethodNotAllowed)
+			return
+		}
+	})
+
 	mux.HandleFunc("/connect", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "仅支持 POST 请求", http.StatusMethodNotAllowed)
 			return
 		}
 
+		r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
 		var req connectRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, connectResponse{Status: runner.Status(), Error: "读取连接请求失败"})
@@ -84,6 +117,7 @@ func NewAPIHandler(logger *log.Logger, runner *Runner) http.Handler {
 			return
 		}
 
+		r.Body = http.MaxBytesReader(w, r.Body, 2<<20)
 		var req connectRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, testResponse{Error: "读取测试请求失败"})
