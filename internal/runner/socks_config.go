@@ -46,6 +46,9 @@ func loadInitialSOCKSConfig(defaultListenAddr string) (storedSOCKSConfig, string
 		if err := validateStoredSOCKSConfig(stored, true); err != nil {
 			return storedSOCKSConfig{}, configPath, fmt.Errorf("SOCKS5 配置文件无效: %w", err)
 		}
+		if err := validatePersistentSOCKSListenAddr(stored.ListenAddr); err != nil {
+			return storedSOCKSConfig{}, configPath, fmt.Errorf("SOCKS5 配置文件无效: %w", err)
+		}
 		return stored, configPath, nil
 	}
 	if !errors.Is(err, os.ErrNotExist) {
@@ -119,14 +122,29 @@ func validateSOCKSListenAddr(addr string) error {
 		return fmt.Errorf("SOCKS5 监听地址格式无效，应类似 0.0.0.0:1080: %w", err)
 	}
 	port, err := strconv.Atoi(portText)
+	if err != nil || port < 0 || port > 65535 {
+		return fmt.Errorf("SOCKS5 端口必须在 0-65535 之间")
+	}
+	return nil
+}
+
+func validatePersistentSOCKSListenAddr(addr string) error {
+	_, portText, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil {
+		return fmt.Errorf("SOCKS5 监听地址格式无效: %w", err)
+	}
+	port, err := strconv.Atoi(portText)
 	if err != nil || port < 1 || port > 65535 {
-		return fmt.Errorf("SOCKS5 端口必须在 1-65535 之间")
+		return fmt.Errorf("后台保存的 SOCKS5 端口必须在 1-65535 之间")
 	}
 	return nil
 }
 
 func saveSOCKSConfig(path string, cfg storedSOCKSConfig) error {
 	if err := validateStoredSOCKSConfig(cfg, false); err != nil {
+		return err
+	}
+	if err := validatePersistentSOCKSListenAddr(cfg.ListenAddr); err != nil {
 		return err
 	}
 
@@ -148,7 +166,7 @@ func saveSOCKSConfig(path string, cfg storedSOCKSConfig) error {
 	if err != nil {
 		return fmt.Errorf("创建 SOCKS5 临时配置文件失败: %w", err)
 	}
-	writeErr := error(nil)
+	var writeErr error
 	if _, err := file.Write(data); err != nil {
 		writeErr = err
 	}
