@@ -1,12 +1,15 @@
 package runner
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -14,11 +17,14 @@ import (
 )
 
 const (
-	socksVersion5       = 0x05
-	socksMethodNoAuth   = 0x00
-	socksMethodNotFound = 0xFF
-	socksCommandConnect = 0x01
-
+	socksVersion5               = 0x05
+	socksMethodNoAuth           = 0x00
+	socksMethodUserPass         = 0x02
+	socksMethodNotFound         = 0xFF
+	socksUserPassVersion        = 0x01
+	socksUserPassSuccess        = 0x00
+	socksUserPassFailure        = 0x01
+	socksCommandConnect         = 0x01
 	socksReplySuccess           = 0x00
 	socksReplyGeneralFailure    = 0x01
 	socksReplyConnectionDenied  = 0x02
@@ -56,6 +62,9 @@ func newSOCKSServer(logger *log.Logger, listenAddr string, allowConnect func() b
 }
 
 func (s *SOCKSServer) ListenAddr() string {
+	if s == nil {
+		return ""
+	}
 	return s.listenAddr
 }
 
@@ -71,18 +80,17 @@ func (s *SOCKSServer) DialAddr() string {
 
 	host := tcpAddr.IP.String()
 	if tcpAddr.IP == nil || tcpAddr.IP.IsUnspecified() {
-		if tcpAddr.IP != nil && tcpAddr.IP.To4() == nil {
-			host = "::1"
-		} else {
-			host = "127.0.0.1"
-		}
+		// Internal health probes should always use IPv4 loopback for wildcard
+		// listeners. This is stable even on systems where net.Listen("tcp",
+		// "0.0.0.0:...") is represented internally by an IPv6 wildcard socket.
+		host = "127.0.0.1"
 	}
 
 	return net.JoinHostPort(host, strconv.Itoa(tcpAddr.Port))
 }
 
 func (s *SOCKSServer) Close() error {
-	if s.listener == nil {
+	if s == nil || s.listener == nil {
 		return nil
 	}
 
@@ -103,7 +111,6 @@ func (s *SOCKSServer) serve() {
 		}
 
 		s.logger.Printf("SOCKS5 收到连接：%s -> %s", conn.RemoteAddr().String(), conn.LocalAddr().String())
-
 		go s.handleConn(conn)
 	}
 }
@@ -133,16 +140,36 @@ func (s *SOCKSServer) negotiate(conn net.Conn) error {
 		return fmt.Errorf("读取认证方法失败: %w", err)
 	}
 
-	accepted := slices.Contains(methods, byte(socksMethodNoAuth))
-	s.logger.Printf("SOCKS5 客户端认证方法：%v", methods)
+	username, password, authEnabled := socksCredentials()
+	selectedMethod := byte(socksMethodNotFound)
 
-	if !accepted {
+	if authEnabled {
+		if isLoopbackConnection(conn) && slices.Contains(methods, byte(socksMethodNoAuth)) {
+			selectedMethod = socksMethodNoAuth
+		} else if slices.Contains(methods, byte(socksMethodUserPass)) {
+			selectedMethod = socksMethodUserPass
+		}
+	} else if slices.Contains(methods, byte(socksMethodNoAuth)) {
+		selectedMethod = socksMethodNoAuth
+	}
+
+	s.logger.Printf("SOCKS5 客户端认证方法：%v，选择=%d", methods, selectedMethod)
+	if selectedMethod == socksMethodNotFound {
 		_, _ = conn.Write([]byte{socksVersion5, socksMethodNotFound})
+		if authEnabled {
+			return fmt.Errorf("客户端不支持 SOCKS5 用户名/密码认证")
+		}
 		return fmt.Errorf("客户端不支持无认证 SOCKS5")
 	}
 
-	if _, err := conn.Write([]byte{socksVersion5, socksMethodNoAuth}); err != nil {
+	if _, err := conn.Write([]byte{socksVersion5, selectedMethod}); err != nil {
 		return fmt.Errorf("写入握手响应失败: %w", err)
+	}
+
+	if selectedMethod == socksMethodUserPass {
+		if err := authenticateSOCKSUserPass(conn, username, password); err != nil {
+			return err
+		}
 	}
 
 	requestHead := make([]byte, 4)
@@ -202,6 +229,64 @@ func (s *SOCKSServer) negotiate(conn net.Conn) error {
 	}
 
 	return nil
+}
+
+func authenticateSOCKSUserPass(conn net.Conn, expectedUsername, expectedPassword string) error {
+	header := make([]byte, 2)
+	if _, err := io.ReadFull(conn, header); err != nil {
+		return fmt.Errorf("读取 SOCKS5 用户名认证头失败: %w", err)
+	}
+	if header[0] != socksUserPassVersion {
+		_, _ = conn.Write([]byte{socksUserPassVersion, socksUserPassFailure})
+		return fmt.Errorf("不支持的 SOCKS5 用户名认证版本: %d", header[0])
+	}
+
+	usernameBuf := make([]byte, int(header[1]))
+	if _, err := io.ReadFull(conn, usernameBuf); err != nil {
+		return fmt.Errorf("读取 SOCKS5 用户名失败: %w", err)
+	}
+
+	passwordLength := make([]byte, 1)
+	if _, err := io.ReadFull(conn, passwordLength); err != nil {
+		return fmt.Errorf("读取 SOCKS5 密码长度失败: %w", err)
+	}
+	passwordBuf := make([]byte, int(passwordLength[0]))
+	if _, err := io.ReadFull(conn, passwordBuf); err != nil {
+		return fmt.Errorf("读取 SOCKS5 密码失败: %w", err)
+	}
+
+	userHash := sha256.Sum256(usernameBuf)
+	expectedUserHash := sha256.Sum256([]byte(expectedUsername))
+	passHash := sha256.Sum256(passwordBuf)
+	expectedPassHash := sha256.Sum256([]byte(expectedPassword))
+	valid := subtle.ConstantTimeCompare(userHash[:], expectedUserHash[:]) & subtle.ConstantTimeCompare(passHash[:], expectedPassHash[:])
+	if valid != 1 {
+		_, _ = conn.Write([]byte{socksUserPassVersion, socksUserPassFailure})
+		return fmt.Errorf("SOCKS5 用户名或密码错误")
+	}
+
+	if _, err := conn.Write([]byte{socksUserPassVersion, socksUserPassSuccess}); err != nil {
+		return fmt.Errorf("写入 SOCKS5 认证成功响应失败: %w", err)
+	}
+	return nil
+}
+
+func socksCredentials() (username, password string, enabled bool) {
+	username = strings.TrimSpace(os.Getenv("SOCKS_USERNAME"))
+	password = os.Getenv("SOCKS_PASSWORD")
+	return username, password, username != "" && password != ""
+}
+
+func isLoopbackConnection(conn net.Conn) bool {
+	if conn == nil || conn.RemoteAddr() == nil {
+		return false
+	}
+	host, _, err := net.SplitHostPort(conn.RemoteAddr().String())
+	if err != nil {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func relayTCP(errCh chan<- error, dst net.Conn, src net.Conn) {

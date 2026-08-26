@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -19,6 +20,10 @@ func main() {
 	runtimeCtx, runtimeCancel := context.WithCancel(context.Background())
 	defer runtimeCancel()
 
+	if err := validateSOCKSCredentials(); err != nil {
+		logger.Fatalf("SOCKS5 配置错误：%v", err)
+	}
+
 	r, err := runner.New(logger, socksListenAddr(), socksBypassCIDRs(), autoPilotConfig())
 	if err != nil {
 		logger.Fatalf("初始化 VPN Runner 失败：%v", err)
@@ -29,11 +34,14 @@ func main() {
 		Addr:              controlAddr(),
 		Handler:           runner.NewAPIHandler(logger, r),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	go func() {
 		logger.Printf("Runner 控制接口启动成功，监听地址：%s", controlAddr())
-		logger.Printf("SOCKS5 监听地址：%s", r.Status().SocksListenAddr)
+		logger.Printf("SOCKS5 监听地址：%s（公网连接必须使用用户名/密码认证）", r.Status().SocksListenAddr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Fatalf("启动 Runner HTTP 服务失败：%v", err)
 		}
@@ -57,19 +65,34 @@ func main() {
 }
 
 func controlAddr() string {
-	if value := os.Getenv("RUNNER_CONTROL_ADDR"); value != "" {
+	if value := strings.TrimSpace(os.Getenv("RUNNER_CONTROL_ADDR")); value != "" {
 		return value
 	}
 
-	return ":18081"
+	return "127.0.0.1:18081"
 }
 
 func socksListenAddr() string {
-	if value := os.Getenv("SOCKS_LISTEN_ADDR"); value != "" {
+	if value := strings.TrimSpace(os.Getenv("SOCKS_LISTEN_ADDR")); value != "" {
 		return value
 	}
 
 	return "0.0.0.0:1080"
+}
+
+func validateSOCKSCredentials() error {
+	username := strings.TrimSpace(os.Getenv("SOCKS_USERNAME"))
+	password := os.Getenv("SOCKS_PASSWORD")
+	if username == "" || password == "" {
+		return fmt.Errorf("必须同时设置 SOCKS_USERNAME 和 SOCKS_PASSWORD，禁止公网匿名 SOCKS5")
+	}
+	if len([]byte(username)) > 255 {
+		return fmt.Errorf("SOCKS_USERNAME 不能超过 255 字节")
+	}
+	if len([]byte(password)) > 255 {
+		return fmt.Errorf("SOCKS_PASSWORD 不能超过 255 字节")
+	}
+	return nil
 }
 
 func socksBypassCIDRs() []string {

@@ -1,265 +1,257 @@
-# VpnGate
+# VpnGate to SOCKS5
 
-一个本地 VPN Gate 管理工具：提供 **节点浏览 Web 页面**、**单节点 OpenVPN 测试**、**推荐节点连接**、**自动连接/监测 Runner** 和 **SOCKS5 代理出口**。
+一个 VPN Gate 管理工具，提供节点浏览 Web 页面、OpenVPN 测试/连接、自动监测 Runner，以及可供外网客户端使用的 SOCKS5 代理。
 
-适合用来：
+## 当前安全模型
 
-- 浏览并筛选 VPN Gate 在线节点
-- 在本机或容器内测试节点是否可连
-- 连接推荐节点或指定节点
-- 通过本地 SOCKS5 代理使用已连接的 VPN
-- 让 Runner 自动检测网络状态并在需要时重新选点
+原生运行时默认按下面的方式工作：
+
+```text
+Internet
+   │
+   ├── 0.0.0.0:1080  SOCKS5
+   │      └── RFC 1929 用户名/密码认证
+   │
+   └── 0.0.0.0:8080  Web UI
+          └── 用户名/密码登录 + Session Cookie
+                    │
+                    ▼
+          127.0.0.1:18081 Runner API
+                    │
+                    ▼
+                 OpenVPN
+                    │
+                    ▼
+                 VPNGate
+```
+
+- SOCKS5 可以监听公网，但 `vpngate-runner` 启动时强制要求 `SOCKS_USERNAME` 和 `SOCKS_PASSWORD`。
+- Web UI 可以监听公网，但 Web 启动时强制要求 `WEB_PASSWORD`；`WEB_USERNAME` 默认是 `admin`。
+- Runner 控制 API 默认只监听 `127.0.0.1:18081`，不应该直接暴露公网。
+- Runner 自己通过 `127.0.0.1` 访问 SOCKS5 做健康检查时允许无认证；外部连接必须使用用户名/密码。
+- Web 登录失败达到 5 次后会临时限制该来源 IP 的继续登录。
+- Session Cookie 使用 `HttpOnly`、`SameSite=Strict`；启用 Go 原生 TLS 后同时设置 `Secure`。
+
+> SOCKS5 用户名/密码认证解决的是“谁可以使用代理”，并不会给 SOCKS5 客户端到服务器之间的 TCP 流量自动增加 TLS 加密。
 
 ## 功能概览
 
 - 从 VPN Gate iPhone API 拉取节点列表
-- 按推荐规则排序节点（综合 Score / Speed / Ping 等因素）
-- 按关键词、国家筛选节点
-- 展示节点主机名、IP、国家、Ping、速度、在线时长、会话数、用户数、流量、备注等信息
-- 支持单节点 OpenVPN 测试
-- 支持连接推荐节点 / 指定节点 / 断开连接
-- 提供本地 SOCKS5 代理入口
-- 支持 Runner 自动连接、监控探活、失败隔离与重试
+- 按推荐规则排序节点
+- 关键词、国家筛选
+- 单节点 OpenVPN 测试
+- 连接推荐节点 / 指定节点 / 断开连接
+- SOCKS5 CONNECT 代理
+- SOCKS5 用户名/密码认证
+- Runner 自动连接、探活、失败隔离与重试
+- Web 登录 Session 与登录失败限速
+- Go 自带 HTTPS，可选，不依赖 Caddy / Nginx
 
-## 组件说明
+## 组件
 
-项目包含两个主要进程：
+### `vpngate-web`
 
-### 1. `vpngate-web`
+负责节点列表、管理页面和 Runner 控制操作。
 
-负责：
-
-- 拉取并展示 VPN Gate 节点列表
-- 页面筛选、刷新、状态展示
-- 调用 Runner 控制接口发起连接 / 断开 / 测试
-
-默认独立运行端口：`8080`
-
-### 2. `vpngate-runner`
-
-负责：
-
-- 管理 OpenVPN 连接生命周期
-- 提供 SOCKS5 代理
-- 对外暴露本地控制接口
-- 自动选点、自动连接、监控连通性、失败隔离
-
-默认端口：
-
-- 控制接口：`127.0.0.1:18081`
-- SOCKS5：`127.0.0.1:1080`（Compose 对外映射为 `10080`）
-
-### 为什么拆成两个进程
-
-Web 和 Runner 分离后，可以避免 OpenVPN 修改路由时影响 Web 管理页面的可访问性。
-
-## 目录结构
+默认：
 
 ```text
-.
-├── main.go                       # Web 服务入口
-├── cmd/
-│   └── vpngate-runner/           # Runner 入口
-├── internal/
-│   ├── web/                      # 页面路由、渲染、筛选、刷新、控制逻辑
-│   ├── runner/                   # OpenVPN / SOCKS5 / 自动连接 / 控制 API
-│   ├── runnerclient/             # Web 到 Runner 的客户端封装
-│   └── vpngate/                  # VPN Gate API 抓取、解析、排序、OpenVPN 测试
-├── docker-compose.yml            # Linux 启动方案
-├── docker-compose.macos.yml      # macOS + Docker Desktop 启动方案
-└── Dockerfile                    # 同时构建 web 与 runner 二进制
+0.0.0.0:8080
+```
+
+必须设置：
+
+```text
+WEB_PASSWORD
+```
+
+### `vpngate-runner`
+
+负责 OpenVPN 生命周期、SOCKS5 和自动监控。
+
+默认：
+
+```text
+Runner API: 127.0.0.1:18081
+SOCKS5:     0.0.0.0:1080
+```
+
+必须设置：
+
+```text
+SOCKS_USERNAME
+SOCKS_PASSWORD
 ```
 
 ## 环境要求
 
-### Docker 方式
-
-- Docker
-- Docker Compose
-- Linux 宿主机，或 macOS + Docker Desktop
-
-### 本地 Go 方式
+原生运行：
 
 - Go `1.26.1`
-- 如果要使用 Runner / OpenVPN 测试，需要本机安装 `openvpn`
-- 需要具备创建网络接口、修改路由等权限的运行环境
+- OpenVPN
+- Runner 需要足够的网络接口/路由权限
 
-## 快速开始
+Linux 原生模式会使用 `ip route`、`ip rule` 等网络能力，建议以明确受控的权限运行。
 
-### 方式一：Docker Compose（推荐）
+## 原生运行
 
-仓库提供两个 Compose 文件：
-
-- `docker-compose.yml`：适用于原生 Linux 主机
-- `docker-compose.macos.yml`：适用于 macOS + Docker Desktop
-
-启动后默认访问地址：
-
-- Web 页面：`http://localhost:8082`
-- SOCKS5 代理：`127.0.0.1:10080`
-
-#### Linux
+先复制示例配置：
 
 ```bash
-docker compose up --build -d
+cp .env.example .env
 ```
 
-查看日志：
+`.env` 已加入 `.gitignore`，不要把真实密码提交到 Git。
+
+程序本身不会自动读取 `.env` 文件；你需要通过 shell、systemd、PowerShell 或其他进程管理器把变量注入进程。
+
+### Linux / macOS shell 示例
+
+终端 1，启动 Runner：
 
 ```bash
-docker compose logs -f vpngate-web
-docker compose logs -f vpngate-runner
-```
-
-停止：
-
-```bash
-docker compose down
-```
-
-#### macOS
-
-```bash
-docker compose -f docker-compose.macos.yml up --build -d
-```
-
-查看日志：
-
-```bash
-docker compose -f docker-compose.macos.yml logs -f vpngate-web
-docker compose -f docker-compose.macos.yml logs -f vpngate-runner
-```
-
-停止：
-
-```bash
-docker compose -f docker-compose.macos.yml down
-```
-
-#### macOS 说明
-
-- Docker Desktop 中的 Linux 容器运行在一个轻量 Linux VM 里
-- `vpngate-runner` 使用的是该 Linux VM / 容器侧的 TUN 能力，不是 macOS 宿主机上的 `utun`
-- 因此 `docker-compose.macos.yml` 不会绑定 macOS 宿主机的 `/dev/net/tun`
-- 如果 Docker Desktop 无法提供可用的 TUN / OpenVPN 能力，请改用原生 Linux 或 Linux VM 运行
-
-### 方式二：本地 Go 运行
-
-#### 只启动 Web 页面
-
-```bash
-go run .
-```
-
-默认监听：`http://127.0.0.1:8080`
-
-如果此时没有单独启动 Runner，页面仍可浏览节点列表，但 VPN 连接、状态查询、测试等 Runner 相关能力会不可用。
-
-#### 启动完整本地环境
-
-终端 1：启动 Runner
-
-```bash
+export SOCKS_LISTEN_ADDR='0.0.0.0:1080'
+export SOCKS_USERNAME='proxy-user'
+export SOCKS_PASSWORD='replace-with-a-long-random-password'
+export RUNNER_CONTROL_ADDR='127.0.0.1:18081'
 go run ./cmd/vpngate-runner
 ```
 
-终端 2：启动 Web
+终端 2，启动 Web：
 
 ```bash
+export WEB_LISTEN_ADDR='0.0.0.0:8080'
+export WEB_USERNAME='admin'
+export WEB_PASSWORD='replace-with-another-long-random-password'
+export WEB_SESSION_TTL='12h'
+export RUNNER_API_URL='http://127.0.0.1:18081'
 go run .
 ```
 
-自定义 Web 端口：
+然后访问：
 
-```bash
-PORT=8081 go run .
+```text
+http://服务器IP:8080
 ```
 
-## 常用命令
+SOCKS 客户端填写：
+
+```text
+类型: SOCKS5
+服务器: 服务器公网 IP
+端口: 1080
+用户名: SOCKS_USERNAME
+密码: SOCKS_PASSWORD
+```
+
+## Go 原生 HTTPS
+
+不需要 Caddy 或 Nginx。已有证书和私钥时设置：
 
 ```bash
-# 运行 Web
+export WEB_LISTEN_ADDR='0.0.0.0:8443'
+export WEB_TLS_CERT='/absolute/path/server.crt'
+export WEB_TLS_KEY='/absolute/path/server.key'
+export WEB_USERNAME='admin'
+export WEB_PASSWORD='replace-with-a-long-random-password'
 go run .
-
-# 运行 Runner
-go run ./cmd/vpngate-runner
-
-# 构建
-go build .
-go build ./...
-
-# 测试
-go test ./...
-go test ./internal/vpngate
-
-# 联机测试（默认跳过）
-VPNGATE_LIVE_TEST=1 go test ./internal/vpngate -run '^TestFetchIPhoneServersLive$' -count=1
-
-# 静态检查
-go vet ./...
-
-# 格式化
-gofmt -w main.go internal/web/app.go
-gofmt -l .
 ```
+
+访问：
+
+```text
+https://服务器地址:8443
+```
+
+`WEB_TLS_CERT` 和 `WEB_TLS_KEY` 必须同时设置。如果不设置，Web 会继续使用 HTTP 并在日志中提示公网明文风险。
 
 ## 环境变量
 
-### Web 服务
+### Web
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `PORT` | `8080` | Web 服务监听端口 |
-| `RUNNER_API_URL` | `http://127.0.0.1:18081` | Runner 控制接口地址 |
+| `WEB_LISTEN_ADDR` | `0.0.0.0:8080` | Web 监听地址 |
+| `PORT` | 空 | 兼容旧配置；未设置 `WEB_LISTEN_ADDR` 时使用 |
+| `WEB_USERNAME` | `admin` | Web 登录用户名 |
+| `WEB_PASSWORD` | 无 | **必填**，Web 登录密码 |
+| `WEB_SESSION_TTL` | `12h` | 登录 Session 有效期 |
+| `WEB_TLS_CERT` | 空 | Go HTTPS 证书路径 |
+| `WEB_TLS_KEY` | 空 | Go HTTPS 私钥路径 |
+| `RUNNER_API_URL` | `http://127.0.0.1:18081` | Web 调用 Runner 的地址 |
 
-### Runner 服务
+### Runner / SOCKS5
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `RUNNER_CONTROL_ADDR` | `:18081` | Runner 控制接口监听地址 |
-| `SOCKS_LISTEN_ADDR` | `0.0.0.0:1080` | SOCKS5 代理监听地址 |
+| `RUNNER_CONTROL_ADDR` | `127.0.0.1:18081` | Runner 控制接口，默认仅本机 |
+| `SOCKS_LISTEN_ADDR` | `0.0.0.0:1080` | SOCKS5 公网监听地址 |
+| `SOCKS_USERNAME` | 无 | **必填**，SOCKS5 用户名 |
+| `SOCKS_PASSWORD` | 无 | **必填**，SOCKS5 密码 |
 | `SOCKS_BYPASS_CIDRS` | 空 | SOCKS5 直连网段，逗号分隔 |
-| `AUTO_CONNECT` | `true` | 是否启用自动连接与自动守护 |
+| `AUTO_CONNECT` | `true` | 自动连接与自动守护 |
 | `MONITOR_URL` | `https://www.gstatic.com/generate_204` | HTTP 探活地址 |
-| `MONITOR_FAILURE_THRESHOLD` | `3` | 连续多少次“VPN 探活失败但直连复核成功”后才判定节点失效 |
+| `MONITOR_FAILURE_THRESHOLD` | `3` | 连续失败阈值 |
 | `TCP_PROBE_ADDRESS` | 空 | 可选 TCP 探针地址 |
 | `TCP_PROBE_TIMEOUT` | `3s` | TCP 探针超时 |
-| `OPENVPN_CONNECT_TIMEOUT` | `30s` | OpenVPN 整体建连超时（Runner watchdog） |
+| `OPENVPN_CONNECT_TIMEOUT` | `30s` | OpenVPN 建连超时 |
 | `MONITOR_INTERVAL` | `20s` | 监测间隔 |
 | `MONITOR_TIMEOUT` | `6s` | 监测超时 |
-| `FETCH_TIMEOUT` | `30s` | 自动选点时抓取节点列表超时 |
-| `CONNECT_COOLDOWN` | `5s` | 自动重连冷却时间 |
-| `MONITOR_STABLE_AFTER` | `10s` | 建连后多长时间开始稳定性监测 |
+| `FETCH_TIMEOUT` | `30s` | 抓取节点列表超时 |
+| `CONNECT_COOLDOWN` | `5s` | 自动重连冷却 |
+| `MONITOR_STABLE_AFTER` | `10s` | 建连后开始稳定性监测的延时 |
 | `NODE_QUARANTINE` | `5m` | 节点失败后的基础隔离时间 |
 | `BYPASS_ROUTE_TABLE` | `100` | Linux 策略路由表编号 |
 | `BYPASS_FWMARK` | `1` | Linux 路由标记 |
 
-例如：
-
-```bash
-AUTO_CONNECT=false MONITOR_INTERVAL=15s docker compose -f docker-compose.macos.yml up --build -d
-```
-
-## 健康检查与控制接口
+## HTTP 接口
 
 ### Web
 
-- `GET /health`：健康检查
-- `POST /refresh`：刷新节点列表
+- `GET /login`：登录页
+- `POST /login`：登录
+- `POST /logout`：退出登录
+- `GET /health`：健康检查，保持无需登录
+- 其他管理页面和操作：需要有效 Session
 
 ### Runner
 
-- `GET /health`：健康检查
-- `GET /status`：获取连接状态
-- `POST /connect`：连接指定节点
-- `POST /disconnect`：断开当前连接
-- `POST /test`：测试指定节点
+Runner 默认只监听 `127.0.0.1:18081`：
 
-## 说明与限制
+- `GET /health`
+- `GET /status`
+- `POST /connect`
+- `POST /disconnect`
+- `POST /test`
 
-- 节点数据来自上游 VPN Gate API：`https://www.vpngate.net/api/iphone/`
-- 首次启动时会自动刷新一次节点列表；如果失败，服务仍会继续启动
-- 单节点测试和持久连接依赖 `openvpn`
-- Docker 场景下，Runner 需要 `privileged` / `NET_ADMIN` 等网络能力
-- macOS Docker Desktop 场景依赖 Linux VM 的网络能力，不等同于直接控制 macOS 宿主机网络
-- 如果你只需要查看节点列表，可以只运行 Web；如果需要连接、SOCKS5、自动守护能力，则需要同时运行 Runner
+Runner API 目前不单独做账号认证，因为原生部署设计为仅本机访问。不要把 `RUNNER_CONTROL_ADDR` 改成公网地址。
+
+## 构建与测试
+
+```bash
+go build .
+go build ./...
+go test ./...
+go vet ./...
+gofmt -l .
+```
+
+## Docker
+
+仓库仍保留 Docker Compose 配置，但新增认证后必须提供：
+
+```text
+WEB_PASSWORD
+SOCKS_USERNAME
+SOCKS_PASSWORD
+```
+
+本项目的主要安全建议仍然是：公网只开放你确实需要的 Web 与 SOCKS 端口，Runner API 保持本机或内部网络可见。
+
+## 数据来源
+
+VPN Gate 节点数据来自：
+
+```text
+https://www.vpngate.net/api/iphone/
+```

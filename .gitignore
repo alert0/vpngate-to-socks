@@ -6,3 +6,6 @@ coverage.out
 .DS_Store
 .opencode/
 /vpngate
+.env
+.env.*
+!.env.example

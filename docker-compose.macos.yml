@@ -13,6 +13,9 @@ services:
     environment:
       PORT: "8080"
       RUNNER_API_URL: "http://vpngate-runner:18081"
+      WEB_USERNAME: "${WEB_USERNAME:-admin}"
+      WEB_PASSWORD: "${WEB_PASSWORD:?WEB_PASSWORD is required}"
+      WEB_SESSION_TTL: "${WEB_SESSION_TTL:-12h}"
     ports:
       - "8082:8080"
     depends_on:
@@ -34,6 +37,8 @@ services:
     environment:
       RUNNER_CONTROL_ADDR: ":18081"
       SOCKS_LISTEN_ADDR: "0.0.0.0:1080"
+      SOCKS_USERNAME: "${SOCKS_USERNAME:?SOCKS_USERNAME is required}"
+      SOCKS_PASSWORD: "${SOCKS_PASSWORD:?SOCKS_PASSWORD is required}"
       SOCKS_BYPASS_CIDRS: "${SOCKS_BYPASS_CIDRS:-192.168.31.0/24}"
       AUTO_CONNECT: "${AUTO_CONNECT:-true}"
       MONITOR_URL: "${MONITOR_URL:-https://www.gstatic.com/generate_204}"
