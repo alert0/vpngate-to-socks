@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-APP_NAME="vpngate"
 REPO_URL="${REPO_URL:-https://github.com/alert0/vpngate-to-socks.git}"
 REPO_REF="${REPO_REF:-main}"
 INSTALL_ROOT="${INSTALL_ROOT:-/opt/vpngate}"
@@ -27,6 +26,11 @@ SOCKS_PASSWORD="${SOCKS_PASSWORD:-}"
 WEB_TLS_CERT="${WEB_TLS_CERT:-}"
 WEB_TLS_KEY="${WEB_TLS_KEY:-}"
 
+ACTIVE_RUNNER_CONTROL_ADDR="$RUNNER_CONTROL_ADDR"
+ACTIVE_WEB_LISTEN_ADDR="$WEB_LISTEN_ADDR"
+ACTIVE_WEB_TLS_CERT="$WEB_TLS_CERT"
+ACTIVE_SOCKS_LISTEN_ADDR="$SOCKS_LISTEN_ADDR"
+
 log() { printf '\033[1;34m[VPNGate]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[VPNGate WARN]\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[1;31m[VPNGate ERROR]\033[0m %s\n' "$*" >&2; exit 1; }
@@ -51,6 +55,36 @@ require_root() {
 
 random_hex() {
   od -An -N24 -tx1 /dev/urandom | tr -d ' \n'
+}
+
+read_env_value() {
+  local file="$1" key="$2" fallback="$3" value
+  if [[ ! -f "$file" ]]; then
+    printf '%s' "$fallback"
+    return 0
+  fi
+
+  value="$(awk -v wanted="$key" '
+    index($0, wanted "=") == 1 {
+      sub(/^[^=]*=/, "")
+      print
+      exit
+    }
+  ' "$file" 2>/dev/null || true)"
+
+  if [[ -z "$value" ]]; then
+    printf '%s' "$fallback"
+    return 0
+  fi
+
+  if [[ "$value" == \"*\" && "$value" == *\" ]]; then
+    value="${value#\"}"
+    value="${value%\"}"
+  elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
+    value="${value#\'}"
+    value="${value%\'}"
+  fi
+  printf '%s' "$value"
 }
 
 install_packages() {
@@ -184,6 +218,22 @@ EOF
   fi
 }
 
+refresh_active_config() {
+  ACTIVE_RUNNER_CONTROL_ADDR="$(read_env_value "$RUNNER_ENV" RUNNER_CONTROL_ADDR "$RUNNER_CONTROL_ADDR")"
+  ACTIVE_WEB_LISTEN_ADDR="$(read_env_value "$WEB_ENV" WEB_LISTEN_ADDR "$WEB_LISTEN_ADDR")"
+  ACTIVE_WEB_TLS_CERT="$(read_env_value "$WEB_ENV" WEB_TLS_CERT "$WEB_TLS_CERT")"
+  ACTIVE_SOCKS_LISTEN_ADDR="$(read_env_value "$RUNNER_ENV" SOCKS_LISTEN_ADDR "$SOCKS_LISTEN_ADDR")"
+}
+
+refresh_active_socks_from_runner() {
+  local payload addr
+  payload="$(curl -fsS --max-time 3 "http://${ACTIVE_RUNNER_CONTROL_ADDR}/socks/config" 2>/dev/null || true)"
+  addr="$(printf '%s' "$payload" | sed -n 's/.*"listenAddr":"\([^"]*\)".*/\1/p')"
+  if [[ -n "$addr" ]]; then
+    ACTIVE_SOCKS_LISTEN_ADDR="$addr"
+  fi
+}
+
 build_binaries() {
   log "编译 Web 与 Runner"
   mkdir -p "$BIN_DIR"
@@ -255,37 +305,38 @@ EOF
 
 wait_for_health() {
   log "检查服务状态"
-  local i
+  local i web_local_port web_health_url curl_tls_args=()
+
   for i in $(seq 1 20); do
-    if curl -fsS --max-time 2 "http://${RUNNER_CONTROL_ADDR}/health" >/dev/null 2>&1; then
+    if curl -fsS --max-time 2 "http://${ACTIVE_RUNNER_CONTROL_ADDR}/health" >/dev/null 2>&1; then
       break
     fi
     sleep 1
   done
-  curl -fsS --max-time 3 "http://${RUNNER_CONTROL_ADDR}/health" >/dev/null || die "Runner 健康检查失败，请查看 journalctl -u vpngate-runner。"
+  curl -fsS --max-time 3 "http://${ACTIVE_RUNNER_CONTROL_ADDR}/health" >/dev/null || die "Runner 健康检查失败，请查看 journalctl -u vpngate-runner。"
 
-  local web_local_port
-  web_local_port="${WEB_LISTEN_ADDR##*:}"
-  for i in $(seq 1 20); do
-    if curl -fsS --max-time 2 "http://127.0.0.1:${web_local_port}/health" >/dev/null 2>&1; then
-      break
-    fi
-    sleep 1
-  done
-
-  if [[ -z "$WEB_TLS_CERT" ]]; then
-    curl -fsS --max-time 3 "http://127.0.0.1:${web_local_port}/health" >/dev/null || die "Web 健康检查失败，请查看 journalctl -u vpngate-web。"
+  web_local_port="${ACTIVE_WEB_LISTEN_ADDR##*:}"
+  if [[ -n "$ACTIVE_WEB_TLS_CERT" ]]; then
+    web_health_url="https://127.0.0.1:${web_local_port}/health"
+    curl_tls_args=(-k)
   else
-    # Certificate trust/SAN varies by deployment, so only require the service to be active in TLS mode.
-    systemctl is-active --quiet vpngate-web.service || die "Web HTTPS 服务启动失败。"
+    web_health_url="http://127.0.0.1:${web_local_port}/health"
   fi
+
+  for i in $(seq 1 20); do
+    if curl "${curl_tls_args[@]}" -fsS --max-time 2 "$web_health_url" >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+  done
+  curl "${curl_tls_args[@]}" -fsS --max-time 3 "$web_health_url" >/dev/null || die "Web 健康检查失败，请查看 journalctl -u vpngate-web。"
 }
 
 open_firewall_if_active() {
   [[ "$OPEN_FIREWALL" == "1" ]] || return 0
   local web_port socks_port
-  web_port="${WEB_LISTEN_ADDR##*:}"
-  socks_port="${SOCKS_LISTEN_ADDR##*:}"
+  web_port="${ACTIVE_WEB_LISTEN_ADDR##*:}"
+  socks_port="${ACTIVE_SOCKS_LISTEN_ADDR##*:}"
 
   if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q '^Status: active'; then
     log "UFW 已启用，开放 TCP ${web_port} 和 ${socks_port}"
@@ -303,10 +354,10 @@ print_summary() {
   local public_ip web_port socks_port scheme
   public_ip="$(curl -4 -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
   [[ -n "$public_ip" ]] || public_ip="<服务器公网IP>"
-  web_port="${WEB_LISTEN_ADDR##*:}"
-  socks_port="${SOCKS_LISTEN_ADDR##*:}"
+  web_port="${ACTIVE_WEB_LISTEN_ADDR##*:}"
+  socks_port="${ACTIVE_SOCKS_LISTEN_ADDR##*:}"
   scheme="http"
-  [[ -n "$WEB_TLS_CERT" ]] && scheme="https"
+  [[ -n "$ACTIVE_WEB_TLS_CERT" ]] && scheme="https"
 
   printf '\n'
   log "部署完成"
@@ -323,11 +374,11 @@ print_summary() {
     printf 'Web 登录信息: 已保留原配置 %s\n' "$WEB_ENV"
   fi
 
-  if [[ "$RUNNER_CONFIG_CREATED" == "1" ]]; then
+  if [[ "$RUNNER_CONFIG_CREATED" == "1" && ! -f "$SOCKS_CONFIG_FILE" ]]; then
     printf 'SOCKS 用户名: %s\n' "$SOCKS_USERNAME"
     printf 'SOCKS 密码:   %s\n' "$SOCKS_PASSWORD"
   else
-    printf 'SOCKS 初始信息: 已保留原配置/后台持久化设置\n'
+    printf 'SOCKS 登录信息: 已保留原配置/后台持久化设置\n'
   fi
 
   printf '%s\n' "------------------------------------------------------------"
@@ -337,7 +388,7 @@ print_summary() {
   printf '\n'
   warn "如果云厂商有安全组/防火墙，请另外放行 TCP ${web_port} 和 ${socks_port}。"
   warn "以后如果在 Web 后台修改 SOCKS 端口，也要同步修改服务器/云安全组的放行端口。"
-  if [[ -z "$WEB_TLS_CERT" ]]; then
+  if [[ -z "$ACTIVE_WEB_TLS_CERT" ]]; then
     warn "当前 Web 使用 HTTP。公网登录密码和 Session 不具备传输层加密；如有证书，可通过 WEB_TLS_CERT/WEB_TLS_KEY 启用 Go 原生 HTTPS。"
   fi
 }
@@ -349,9 +400,11 @@ main() {
   install_private_go
   create_service_user
   write_initial_config
+  refresh_active_config
   build_binaries
   install_systemd_units
   wait_for_health
+  refresh_active_socks_from_runner
   open_firewall_if_active
 
   if [[ ! -c /dev/net/tun ]]; then
