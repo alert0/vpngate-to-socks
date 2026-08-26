@@ -78,7 +78,7 @@ func socksListenAddr() string {
 		return value
 	}
 
-	return "0.0.0.0:1080"
+	return "0.0.0.0:5888"
 }
 
 func socksBypassCIDRs() []string {
