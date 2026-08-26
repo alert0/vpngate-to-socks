@@ -40,15 +40,15 @@ curl -fsSL https://raw.githubusercontent.com/alert0/vpngate-to-socks/main/deploy
 默认端口：
 
 ```text
-Web:     8080/tcp
-SOCKS5:  1080/tcp
+Web:     5777/tcp
+SOCKS5:  5888/tcp
 Runner:  127.0.0.1:18081（仅本机）
 ```
 
 SOCKS5 后台配置入口：
 
 ```text
-http://服务器IP:8080/settings/socks
+http://服务器IP:5777/settings/socks
 ```
 
 ## 自定义初始配置
@@ -73,11 +73,11 @@ sudo WEB_USERNAME=admin2 \
 | `REPO_REF` | `main` | 部署的 Git 分支/Tag |
 | `INSTALL_ROOT` | `/opt/vpngate` | 安装目录 |
 | `CONFIG_DIR` | `/etc/vpngate` | 配置目录 |
-| `WEB_LISTEN_ADDR` | `0.0.0.0:8080` | Web 监听地址 |
+| `WEB_LISTEN_ADDR` | `0.0.0.0:5777` | Web 监听地址 |
 | `WEB_USERNAME` | `admin` | Web 初始用户名 |
 | `WEB_PASSWORD` | 随机生成 | Web 初始密码 |
 | `WEB_SESSION_TTL` | `12h` | Session 时长 |
-| `SOCKS_LISTEN_ADDR` | `0.0.0.0:1080` | SOCKS5 初始监听地址 |
+| `SOCKS_LISTEN_ADDR` | `0.0.0.0:5888` | SOCKS5 初始监听地址 |
 | `SOCKS_USERNAME` | `proxy` | SOCKS5 初始用户名 |
 | `SOCKS_PASSWORD` | 随机生成 | SOCKS5 初始密码 |
 | `OPEN_FIREWALL` | `1` | 自动处理已启用的 UFW/firewalld；设 `0` 可关闭 |
@@ -97,7 +97,7 @@ sudo WEB_USERNAME=admin2 \
 - 保留 `/etc/vpngate/web.env`；
 - 保留 Web 后台已经写入的 SOCKS5 持久化配置。
 
-因此日常升级不会重新生成密码。
+因此日常升级不会重新生成密码，也不会强行把已有自定义端口改回默认值。
 
 ## systemd
 
@@ -136,8 +136,8 @@ systemctl restart vpngate-runner vpngate-web
 如果服务器来自 AWS、Google Cloud、Azure、阿里云、腾讯云或其他 VPS 服务商，还需要在云控制台安全组放行：
 
 ```text
-TCP 8080
-TCP 1080
+TCP 5777
+TCP 5888
 ```
 
 如果以后通过 Web 后台修改 SOCKS5 端口，也要同步修改本机防火墙和云安全组。
