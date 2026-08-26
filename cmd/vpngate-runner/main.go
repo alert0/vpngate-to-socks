@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -19,10 +18,6 @@ func main() {
 	logger := log.New(os.Stdout, "[VPNRunner] ", log.LstdFlags)
 	runtimeCtx, runtimeCancel := context.WithCancel(context.Background())
 	defer runtimeCancel()
-
-	if err := validateSOCKSCredentials(); err != nil {
-		logger.Fatalf("SOCKS5 配置错误：%v", err)
-	}
 
 	r, err := runner.New(logger, socksListenAddr(), socksBypassCIDRs(), autoPilotConfig())
 	if err != nil {
@@ -41,7 +36,13 @@ func main() {
 
 	go func() {
 		logger.Printf("Runner 控制接口启动成功，监听地址：%s", controlAddr())
-		logger.Printf("SOCKS5 监听地址：%s（公网连接必须使用用户名/密码认证）", r.Status().SocksListenAddr)
+		config := r.SOCKSConfig()
+		logger.Printf("SOCKS5 监听地址：%s", config.ListenAddr)
+		if config.PasswordConfigured {
+			logger.Printf("SOCKS5 公网认证已配置，用户名：%s", config.Username)
+		} else {
+			logger.Printf("SOCKS5 公网认证尚未配置；外部连接会被拒绝，请登录 Web 后台 /settings/socks 设置")
+		}
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Fatalf("启动 Runner HTTP 服务失败：%v", err)
 		}
@@ -78,21 +79,6 @@ func socksListenAddr() string {
 	}
 
 	return "0.0.0.0:1080"
-}
-
-func validateSOCKSCredentials() error {
-	username := strings.TrimSpace(os.Getenv("SOCKS_USERNAME"))
-	password := os.Getenv("SOCKS_PASSWORD")
-	if username == "" || password == "" {
-		return fmt.Errorf("必须同时设置 SOCKS_USERNAME 和 SOCKS_PASSWORD，禁止公网匿名 SOCKS5")
-	}
-	if len([]byte(username)) > 255 {
-		return fmt.Errorf("SOCKS_USERNAME 不能超过 255 字节")
-	}
-	if len([]byte(password)) > 255 {
-		return fmt.Errorf("SOCKS_PASSWORD 不能超过 255 字节")
-	}
-	return nil
 }
 
 func socksBypassCIDRs() []string {

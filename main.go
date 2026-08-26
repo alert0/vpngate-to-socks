@@ -36,7 +36,11 @@ func main() {
 		logger.Fatalf("Web TLS 配置错误：%v", err)
 	}
 
-	handler, err := web.NewAuthHandler(logger, app.Routes(), web.AuthConfig{
+	rootMux := http.NewServeMux()
+	rootMux.Handle("/settings/socks", web.NewSOCKSSettingsHandler(logger, runnerClient))
+	rootMux.Handle("/", app.Routes())
+
+	handler, err := web.NewAuthHandler(logger, rootMux, web.AuthConfig{
 		Username:     envString("WEB_USERNAME", "admin"),
 		Password:     os.Getenv("WEB_PASSWORD"),
 		SessionTTL:   envDuration("WEB_SESSION_TTL", 12*time.Hour),
@@ -59,6 +63,7 @@ func main() {
 	go func() {
 		if tlsEnabled {
 			logger.Printf("Web 管理服务启动成功：https://%s", displayListenAddr(listenAddr))
+			logger.Printf("SOCKS5 后台配置页面：https://%s/settings/socks", displayListenAddr(listenAddr))
 			if err := server.ListenAndServeTLS(certFile, keyFile); err != nil && err != http.ErrServerClosed {
 				logger.Fatalf("启动 HTTPS 服务失败：%v", err)
 			}
@@ -66,6 +71,7 @@ func main() {
 		}
 
 		logger.Printf("Web 管理服务启动成功：http://%s", displayListenAddr(listenAddr))
+		logger.Printf("SOCKS5 后台配置页面：http://%s/settings/socks", displayListenAddr(listenAddr))
 		logger.Printf("警告：当前未启用 HTTPS，公网访问时登录密码和 Session 可能被窃听；建议配置 WEB_TLS_CERT 与 WEB_TLS_KEY")
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Fatalf("启动 HTTP 服务失败：%v", err)

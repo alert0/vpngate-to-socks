@@ -25,10 +25,12 @@ Internet
                  VPNGate
 ```
 
-- SOCKS5 可以监听公网，但 `vpngate-runner` 启动时强制要求 `SOCKS_USERNAME` 和 `SOCKS_PASSWORD`。
+- SOCKS5 可以监听公网，但非本机客户端必须使用用户名/密码认证。
+- Runner 第一次启动时允许 SOCKS5 尚未配置账号密码，此时公网 SOCKS 连接会被拒绝，不会退化成匿名代理。
+- 登录 Web 后可在 `/settings/socks` 设置 SOCKS5 地址、端口、用户名和密码。
+- Runner 自己通过 `127.0.0.1` 使用 SOCKS5 做健康检查时允许无认证。
 - Web UI 可以监听公网，但 Web 启动时强制要求 `WEB_PASSWORD`；`WEB_USERNAME` 默认是 `admin`。
 - Runner 控制 API 默认只监听 `127.0.0.1:18081`，不应该直接暴露公网。
-- Runner 自己通过 `127.0.0.1` 访问 SOCKS5 做健康检查时允许无认证；外部连接必须使用用户名/密码。
 - Web 登录失败达到 5 次后会临时限制该来源 IP 的继续登录。
 - Session Cookie 使用 `HttpOnly`、`SameSite=Strict`；启用 Go 原生 TLS 后同时设置 `Secure`。
 
@@ -43,6 +45,9 @@ Internet
 - 连接推荐节点 / 指定节点 / 断开连接
 - SOCKS5 CONNECT 代理
 - SOCKS5 用户名/密码认证
+- Web 后台修改 SOCKS5 监听地址、端口、用户名和密码
+- SOCKS5 设置热更新，无需重启 Runner
+- SOCKS5 设置本地持久化，重启后继续使用
 - Runner 自动连接、探活、失败隔离与重试
 - Web 登录 Session 与登录失败限速
 - Go 自带 HTTPS，可选，不依赖 Caddy / Nginx
@@ -51,7 +56,7 @@ Internet
 
 ### `vpngate-web`
 
-负责节点列表、管理页面和 Runner 控制操作。
+负责节点列表、管理页面、Runner 控制操作和 SOCKS5 后台设置。
 
 默认：
 
@@ -67,7 +72,7 @@ WEB_PASSWORD
 
 ### `vpngate-runner`
 
-负责 OpenVPN 生命周期、SOCKS5 和自动监控。
+负责 OpenVPN 生命周期、SOCKS5、SOCKS5 配置持久化和自动监控。
 
 默认：
 
@@ -76,12 +81,7 @@ Runner API: 127.0.0.1:18081
 SOCKS5:     0.0.0.0:1080
 ```
 
-必须设置：
-
-```text
-SOCKS_USERNAME
-SOCKS_PASSWORD
-```
+SOCKS5 用户名密码可以通过环境变量提供初始值，也可以在 Web 后台首次设置。
 
 ## 环境要求
 
@@ -105,19 +105,26 @@ cp .env.example .env
 
 程序本身不会自动读取 `.env` 文件；你需要通过 shell、systemd、PowerShell 或其他进程管理器把变量注入进程。
 
-### Linux / macOS shell 示例
+### 启动 Runner
 
-终端 1，启动 Runner：
+SOCKS 账号密码可以先不设置，之后从 Web 后台设置：
 
 ```bash
 export SOCKS_LISTEN_ADDR='0.0.0.0:1080'
-export SOCKS_USERNAME='proxy-user'
-export SOCKS_PASSWORD='replace-with-a-long-random-password'
 export RUNNER_CONTROL_ADDR='127.0.0.1:18081'
 go run ./cmd/vpngate-runner
 ```
 
-终端 2，启动 Web：
+也可以给第一次启动提供初始账号密码：
+
+```bash
+export SOCKS_USERNAME='proxy-user'
+export SOCKS_PASSWORD='replace-with-a-long-random-password'
+```
+
+如果已经在 Web 后台保存过 SOCKS5 设置，保存值会在后续启动时优先使用，环境变量只作为“还没有保存配置时”的初始默认值。
+
+### 启动 Web
 
 ```bash
 export WEB_LISTEN_ADDR='0.0.0.0:8080'
@@ -128,20 +135,61 @@ export RUNNER_API_URL='http://127.0.0.1:18081'
 go run .
 ```
 
-然后访问：
+访问：
 
 ```text
-http://服务器IP:8080
+节点管理： http://服务器IP:8080/
+SOCKS 设置：http://服务器IP:8080/settings/socks
 ```
 
-SOCKS 客户端填写：
+## Web 后台配置 SOCKS5
+
+登录 Web 后访问：
+
+```text
+/settings/socks
+```
+
+可以配置：
+
+- SOCKS5 监听地址，例如 `0.0.0.0:1080`
+- 端口
+- 用户名
+- 密码
+
+保存行为：
+
+- 地址和端口变更会先尝试绑定新端口；绑定失败时保留当前 SOCKS 服务不变。
+- 保存成功后立即切换，无需重启 Runner。
+- 密码不会回显到页面。
+- 密码输入框留空表示保持当前密码。
+- 首次配置时必须填写用户名和密码。
+- 非本机客户端在账号密码未配置前会被拒绝。
+
+配置默认保存在操作系统当前用户配置目录：
+
+```text
+<vpngate user config dir>/vpngate/socks.json
+```
+
+可以通过环境变量指定其他位置：
+
+```bash
+export SOCKS_CONFIG_FILE='/absolute/path/to/socks.json'
+```
+
+配置文件包含 SOCKS 密码，因此程序创建文件时会尽量设置为 `0600`，不要把它提交到 Git。
+
+## SOCKS 客户端
+
+后台配置完成后，客户端填写：
 
 ```text
 类型: SOCKS5
 服务器: 服务器公网 IP
-端口: 1080
-用户名: SOCKS_USERNAME
-密码: SOCKS_PASSWORD
+端口: 后台设置的端口
+用户名: 后台设置的用户名
+密码: 后台设置的密码
 ```
 
 ## Go 原生 HTTPS
@@ -185,9 +233,10 @@ https://服务器地址:8443
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `RUNNER_CONTROL_ADDR` | `127.0.0.1:18081` | Runner 控制接口，默认仅本机 |
-| `SOCKS_LISTEN_ADDR` | `0.0.0.0:1080` | SOCKS5 公网监听地址 |
-| `SOCKS_USERNAME` | 无 | **必填**，SOCKS5 用户名 |
-| `SOCKS_PASSWORD` | 无 | **必填**，SOCKS5 密码 |
+| `SOCKS_LISTEN_ADDR` | `0.0.0.0:1080` | 第一次运行时的 SOCKS5 默认监听地址 |
+| `SOCKS_USERNAME` | 空 | 第一次运行时可选的 SOCKS5 初始用户名 |
+| `SOCKS_PASSWORD` | 空 | 第一次运行时可选的 SOCKS5 初始密码 |
+| `SOCKS_CONFIG_FILE` | 系统用户配置目录 | 后台 SOCKS5 配置持久化文件路径 |
 | `SOCKS_BYPASS_CIDRS` | 空 | SOCKS5 直连网段，逗号分隔 |
 | `AUTO_CONNECT` | `true` | 自动连接与自动守护 |
 | `MONITOR_URL` | `https://www.gstatic.com/generate_204` | HTTP 探活地址 |
@@ -212,6 +261,8 @@ https://服务器地址:8443
 - `POST /login`：登录
 - `POST /logout`：退出登录
 - `GET /health`：健康检查，保持无需登录
+- `GET /settings/socks`：SOCKS5 配置页面，需要登录
+- `POST /settings/socks`：保存 SOCKS5 配置，需要登录
 - 其他管理页面和操作：需要有效 Session
 
 ### Runner
@@ -220,6 +271,8 @@ Runner 默认只监听 `127.0.0.1:18081`：
 
 - `GET /health`
 - `GET /status`
+- `GET /config/socks`
+- `POST /config/socks`
 - `POST /connect`
 - `POST /disconnect`
 - `POST /test`
@@ -238,13 +291,7 @@ gofmt -l .
 
 ## Docker
 
-仓库仍保留 Docker Compose 配置，但新增认证后必须提供：
-
-```text
-WEB_PASSWORD
-SOCKS_USERNAME
-SOCKS_PASSWORD
-```
+仓库仍保留 Docker Compose 配置。当前主要使用场景是原生运行；如果使用 Docker，需要额外考虑 SOCKS 配置文件的持久化挂载。
 
 本项目的主要安全建议仍然是：公网只开放你确实需要的 Web 与 SOCKS 端口，Runner API 保持本机或内部网络可见。
 

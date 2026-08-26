@@ -9,10 +9,10 @@ import (
 	"io"
 	"log"
 	"net"
-	"os"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -34,30 +34,47 @@ const (
 
 type SOCKSServer struct {
 	logger       *log.Logger
-	listenAddr   string
-	listener     net.Listener
 	allowConnect func() bool
+	configPath   string
+
+	mu         sync.RWMutex
+	updateMu   sync.Mutex
+	listenAddr string
+	listener   net.Listener
+	username   string
+	password   string
 }
 
 func newSOCKSServer(logger *log.Logger, listenAddr string, allowConnect func() bool) (*SOCKSServer, error) {
-	if listenAddr == "" {
-		listenAddr = "0.0.0.0:1080"
+	if logger == nil {
+		logger = log.Default()
 	}
 
-	listener, err := net.Listen("tcp", listenAddr)
+	initial, configPath, err := loadInitialSOCKSConfig(listenAddr)
+	if err != nil {
+		return nil, err
+	}
+
+	listener, err := net.Listen("tcp", initial.ListenAddr)
 	if err != nil {
 		return nil, fmt.Errorf("启动 SOCKS5 监听失败: %w", err)
 	}
 
 	s := &SOCKSServer{
 		logger:       logger,
-		listenAddr:   listenAddr,
-		listener:     listener,
 		allowConnect: allowConnect,
+		configPath:   configPath,
+		listenAddr:   initial.ListenAddr,
+		listener:     listener,
+		username:     initial.Username,
+		password:     initial.Password,
 	}
 
-	go s.serve()
+	go s.serve(listener)
 	logger.Printf("SOCKS5 代理监听已启动：%s", listener.Addr().String())
+	if initial.Username == "" || initial.Password == "" {
+		logger.Printf("SOCKS5 尚未配置公网认证，外部客户端会被拒绝；可在 Web 后台 /settings/socks 完成配置")
+	}
 	return s, nil
 }
 
@@ -65,17 +82,26 @@ func (s *SOCKSServer) ListenAddr() string {
 	if s == nil {
 		return ""
 	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	return s.listenAddr
 }
 
 func (s *SOCKSServer) DialAddr() string {
-	if s == nil || s.listener == nil {
+	if s == nil {
 		return ""
 	}
 
-	tcpAddr, ok := s.listener.Addr().(*net.TCPAddr)
+	s.mu.RLock()
+	listener := s.listener
+	s.mu.RUnlock()
+	if listener == nil {
+		return ""
+	}
+
+	tcpAddr, ok := listener.Addr().(*net.TCPAddr)
 	if !ok {
-		return s.listener.Addr().String()
+		return listener.Addr().String()
 	}
 
 	host := tcpAddr.IP.String()
@@ -89,17 +115,104 @@ func (s *SOCKSServer) DialAddr() string {
 	return net.JoinHostPort(host, strconv.Itoa(tcpAddr.Port))
 }
 
+func (s *SOCKSServer) Config() SOCKSConfig {
+	if s == nil {
+		return SOCKSConfig{}
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return publicSOCKSConfig(storedSOCKSConfig{
+		ListenAddr: s.listenAddr,
+		Username:   s.username,
+		Password:   s.password,
+	})
+}
+
+func (s *SOCKSServer) UpdateConfig(update SOCKSConfigUpdate) (SOCKSConfig, error) {
+	if s == nil {
+		return SOCKSConfig{}, fmt.Errorf("SOCKS5 服务未启动")
+	}
+
+	s.updateMu.Lock()
+	defer s.updateMu.Unlock()
+
+	s.mu.RLock()
+	current := storedSOCKSConfig{
+		ListenAddr: s.listenAddr,
+		Username:   s.username,
+		Password:   s.password,
+	}
+	s.mu.RUnlock()
+
+	next := current
+	next.ListenAddr = strings.TrimSpace(update.ListenAddr)
+	next.Username = strings.TrimSpace(update.Username)
+	if update.Password != "" {
+		next.Password = update.Password
+	}
+	if err := validateStoredSOCKSConfig(next, false); err != nil {
+		return SOCKSConfig{}, err
+	}
+
+	var newListener net.Listener
+	if next.ListenAddr != current.ListenAddr {
+		listener, err := net.Listen("tcp", next.ListenAddr)
+		if err != nil {
+			return SOCKSConfig{}, fmt.Errorf("新的 SOCKS5 监听地址无法绑定: %w", err)
+		}
+		newListener = listener
+	}
+
+	if err := saveSOCKSConfig(s.configPath, next); err != nil {
+		if newListener != nil {
+			_ = newListener.Close()
+		}
+		return SOCKSConfig{}, err
+	}
+
+	s.mu.Lock()
+	oldListener := s.listener
+	if newListener != nil {
+		s.listener = newListener
+		s.listenAddr = next.ListenAddr
+	}
+	s.username = next.Username
+	s.password = next.Password
+	s.mu.Unlock()
+
+	if newListener != nil {
+		go s.serve(newListener)
+		if oldListener != nil {
+			_ = oldListener.Close()
+		}
+		s.logger.Printf("SOCKS5 监听地址已切换：%s", newListener.Addr().String())
+	}
+	s.logger.Printf("SOCKS5 认证配置已更新，用户名：%s", next.Username)
+
+	return publicSOCKSConfig(next), nil
+}
+
 func (s *SOCKSServer) Close() error {
-	if s == nil || s.listener == nil {
+	if s == nil {
 		return nil
 	}
 
-	return s.listener.Close()
+	s.updateMu.Lock()
+	defer s.updateMu.Unlock()
+
+	s.mu.Lock()
+	listener := s.listener
+	s.listener = nil
+	s.mu.Unlock()
+	if listener == nil {
+		return nil
+	}
+	return listener.Close()
 }
 
-func (s *SOCKSServer) serve() {
+func (s *SOCKSServer) serve(listener net.Listener) {
 	for {
-		conn, err := s.listener.Accept()
+		conn, err := listener.Accept()
 		if err != nil {
 			if errors.Is(err, net.ErrClosed) {
 				return
@@ -124,6 +237,14 @@ func (s *SOCKSServer) handleConn(conn net.Conn) {
 	}
 }
 
+func (s *SOCKSServer) credentials() (username, password string, enabled bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	username = s.username
+	password = s.password
+	return username, password, username != "" && password != ""
+}
+
 func (s *SOCKSServer) negotiate(conn net.Conn) error {
 	header := make([]byte, 2)
 	if _, err := io.ReadFull(conn, header); err != nil {
@@ -140,26 +261,25 @@ func (s *SOCKSServer) negotiate(conn net.Conn) error {
 		return fmt.Errorf("读取认证方法失败: %w", err)
 	}
 
-	username, password, authEnabled := socksCredentials()
+	username, password, authEnabled := s.credentials()
 	selectedMethod := byte(socksMethodNotFound)
 
-	if authEnabled {
-		if isLoopbackConnection(conn) && slices.Contains(methods, byte(socksMethodNoAuth)) {
-			selectedMethod = socksMethodNoAuth
-		} else if slices.Contains(methods, byte(socksMethodUserPass)) {
-			selectedMethod = socksMethodUserPass
-		}
-	} else if slices.Contains(methods, byte(socksMethodNoAuth)) {
+	// Localhost is reserved for Runner's own health probes and can use no-auth.
+	// Every non-loopback client must authenticate and is rejected until admin
+	// credentials have been configured.
+	if isLoopbackConnection(conn) && slices.Contains(methods, byte(socksMethodNoAuth)) {
 		selectedMethod = socksMethodNoAuth
+	} else if authEnabled && slices.Contains(methods, byte(socksMethodUserPass)) {
+		selectedMethod = socksMethodUserPass
 	}
 
 	s.logger.Printf("SOCKS5 客户端认证方法：%v，选择=%d", methods, selectedMethod)
 	if selectedMethod == socksMethodNotFound {
 		_, _ = conn.Write([]byte{socksVersion5, socksMethodNotFound})
-		if authEnabled {
-			return fmt.Errorf("客户端不支持 SOCKS5 用户名/密码认证")
+		if !authEnabled {
+			return fmt.Errorf("SOCKS5 公网认证尚未配置")
 		}
-		return fmt.Errorf("客户端不支持无认证 SOCKS5")
+		return fmt.Errorf("客户端不支持 SOCKS5 用户名/密码认证")
 	}
 
 	if _, err := conn.Write([]byte{socksVersion5, selectedMethod}); err != nil {
@@ -269,12 +389,6 @@ func authenticateSOCKSUserPass(conn net.Conn, expectedUsername, expectedPassword
 		return fmt.Errorf("写入 SOCKS5 认证成功响应失败: %w", err)
 	}
 	return nil
-}
-
-func socksCredentials() (username, password string, enabled bool) {
-	username = strings.TrimSpace(os.Getenv("SOCKS_USERNAME"))
-	password = os.Getenv("SOCKS_PASSWORD")
-	return username, password, username != "" && password != ""
 }
 
 func isLoopbackConnection(conn net.Conn) bool {

@@ -32,6 +32,11 @@ type testResponse struct {
 	Error  string                    `json:"error,omitempty"`
 }
 
+type socksConfigResponse struct {
+	Config runner.SOCKSConfig `json:"config"`
+	Error  string             `json:"error,omitempty"`
+}
+
 func New(baseURL string, httpClient *http.Client) *Client {
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	if httpClient == nil {
@@ -71,6 +76,72 @@ func (c *Client) Status(ctx context.Context) (runner.Status, error) {
 	}
 
 	return status, nil
+}
+
+func (c *Client) SOCKSConfig(ctx context.Context) (runner.SOCKSConfig, error) {
+	if !c.Enabled() {
+		return runner.SOCKSConfig{}, fmt.Errorf("Runner 控制接口未配置")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/config/socks", nil)
+	if err != nil {
+		return runner.SOCKSConfig{}, err
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return runner.SOCKSConfig{}, err
+	}
+	defer resp.Body.Close()
+
+	var payload socksConfigResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return runner.SOCKSConfig{}, fmt.Errorf("解析 SOCKS5 配置失败: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		if strings.TrimSpace(payload.Error) != "" {
+			return payload.Config, errors.New(payload.Error)
+		}
+		return payload.Config, fmt.Errorf("Runner SOCKS5 配置接口返回异常状态: %s", resp.Status)
+	}
+	return payload.Config, nil
+}
+
+func (c *Client) UpdateSOCKSConfig(ctx context.Context, update runner.SOCKSConfigUpdate) (runner.SOCKSConfig, error) {
+	if !c.Enabled() {
+		return runner.SOCKSConfig{}, fmt.Errorf("Runner 控制接口未配置")
+	}
+
+	body, err := json.Marshal(update)
+	if err != nil {
+		return runner.SOCKSConfig{}, fmt.Errorf("序列化 SOCKS5 配置失败: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/config/socks", bytes.NewReader(body))
+	if err != nil {
+		return runner.SOCKSConfig{}, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return runner.SOCKSConfig{}, err
+	}
+	defer resp.Body.Close()
+
+	var payload socksConfigResponse
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return runner.SOCKSConfig{}, fmt.Errorf("解析 SOCKS5 配置响应失败: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		if strings.TrimSpace(payload.Error) != "" {
+			return payload.Config, errors.New(payload.Error)
+		}
+		return payload.Config, fmt.Errorf("Runner SOCKS5 配置接口返回异常状态: %s", resp.Status)
+	}
+	if strings.TrimSpace(payload.Error) != "" {
+		return payload.Config, errors.New(payload.Error)
+	}
+	return payload.Config, nil
 }
 
 func (c *Client) Connect(ctx context.Context, server vpngate.Server) (runner.Status, error) {
