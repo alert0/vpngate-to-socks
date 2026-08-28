@@ -80,3 +80,18 @@ func TestAuthHandlerRejectsBadPassword(t *testing.T) {
 		t.Fatalf("bad-password status = %d, want %d", rec.Code, http.StatusUnauthorized)
 	}
 }
+
+func TestValidateSameOriginRequestAcceptsOpaqueBrowserOrigin(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "http://example.test/login", nil)
+	req.Host = "example.test"
+	req.Header.Set("Origin", "null")
+
+	if err := validateSameOriginRequest(req); err != nil {
+		t.Fatalf("validateSameOriginRequest() error = %v, want nil", err)
+	}
+
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	if err := validateSameOriginRequest(req); err == nil {
+		t.Fatal("validateSameOriginRequest() accepted explicit cross-site opaque origin")
+	}
+}

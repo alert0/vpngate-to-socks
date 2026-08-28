@@ -843,6 +843,17 @@ func buildIndexURL(notice, flashError, query, selectedCountry string) string {
 
 func validateSameOriginRequest(r *http.Request) error {
 	if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
+		if strings.EqualFold(origin, "null") {
+			switch strings.ToLower(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site"))) {
+			case "", "same-origin", "same-site":
+				// Some browser privacy contexts serialize the page origin as "null".
+				// SameSite=Strict session cookies still protect authenticated actions.
+				return nil
+			default:
+				return fmt.Errorf("仅允许从当前页面发起操作")
+			}
+		}
+
 		originURL, err := url.Parse(origin)
 		if err != nil {
 			return fmt.Errorf("请求来源校验失败")
