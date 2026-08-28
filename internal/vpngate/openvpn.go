@@ -163,6 +163,9 @@ func BuildOpenVPNConnectArgs(configPath, cipher string) []string {
 	return []string{
 		"--verb", "4",
 		"--config", configPath,
+		// Keep the host's management traffic on its original route. The
+		// Runner puts SOCKS5 outbound sockets into a dedicated VPN policy table.
+		"--route-nopull",
 		"--data-ciphers", cipher,
 	}
 }

@@ -38,6 +38,8 @@ type AutoPilotConfig struct {
 	BaseQuarantine          time.Duration
 	BypassRouteTable        int
 	BypassMark              int
+	VPNRouteTable           int
+	VPNMark                 int
 }
 
 type nodeHealth struct {
@@ -82,6 +84,12 @@ func (c AutoPilotConfig) withDefaults() AutoPilotConfig {
 	}
 	if c.BypassMark <= 0 {
 		c.BypassMark = 1
+	}
+	if c.VPNRouteTable <= 0 || c.VPNRouteTable == c.BypassRouteTable {
+		c.VPNRouteTable = c.BypassRouteTable + 1
+	}
+	if c.VPNMark <= 0 || c.VPNMark == c.BypassMark {
+		c.VPNMark = c.BypassMark + 1
 	}
 
 	return c
@@ -597,10 +605,8 @@ func (r *Runner) disconnectForRecovery() error {
 	r.state = StateDisconnecting
 	r.updatedAt = time.Now()
 
-	if err := r.proc.Process.Signal(syscall.SIGTERM); err != nil {
-		if killErr := r.proc.Process.Kill(); killErr != nil {
-			return fmt.Errorf("自动停止 openvpn 失败: %w", err)
-		}
+	if err := r.stopOpenVPNProcess(r.proc); err != nil {
+		return err
 	}
 
 	return nil

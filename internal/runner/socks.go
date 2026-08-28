@@ -43,6 +43,7 @@ type SOCKSServer struct {
 	listener   net.Listener
 	username   string
 	password   string
+	dialRemote func(network, address string) (net.Conn, error)
 }
 
 func newSOCKSServer(logger *log.Logger, listenAddr string, allowConnect func() bool) (*SOCKSServer, error) {
@@ -126,6 +127,13 @@ func (s *SOCKSServer) Config() SOCKSConfig {
 		Username:   s.username,
 		Password:   s.password,
 	})
+}
+
+func (s *SOCKSServer) setDialRemote(dialRemote func(network, address string) (net.Conn, error)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.dialRemote = dialRemote
 }
 
 func (s *SOCKSServer) UpdateConfig(update SOCKSConfigUpdate) (SOCKSConfig, error) {
@@ -318,7 +326,16 @@ func (s *SOCKSServer) negotiate(conn net.Conn) error {
 		return fmt.Errorf("当前 VPN 未连接，拒绝代理到 %s", target)
 	}
 
-	remoteConn, err := net.DialTimeout("tcp", target, 15*time.Second)
+	s.mu.RLock()
+	dialRemote := s.dialRemote
+	s.mu.RUnlock()
+
+	var remoteConn net.Conn
+	if dialRemote != nil {
+		remoteConn, err = dialRemote("tcp", target)
+	} else {
+		remoteConn, err = net.DialTimeout("tcp", target, 15*time.Second)
+	}
 	if err != nil {
 		_ = writeSOCKSReply(conn, socksReplyGeneralFailure)
 		return fmt.Errorf("连接目标 %s 失败: %w", target, err)

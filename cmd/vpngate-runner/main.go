@@ -116,6 +116,8 @@ func autoPilotConfig() runner.AutoPilotConfig {
 		BaseQuarantine:          envDuration("NODE_QUARANTINE", 5*time.Minute),
 		BypassRouteTable:        envInt("BYPASS_ROUTE_TABLE", 100),
 		BypassMark:              envInt("BYPASS_FWMARK", 1),
+		VPNRouteTable:           envInt("VPN_ROUTE_TABLE", 101),
+		VPNMark:                 envInt("VPN_FWMARK", 2),
 	}
 }
 

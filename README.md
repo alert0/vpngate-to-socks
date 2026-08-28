@@ -251,7 +251,9 @@ https://服务器地址:8443
 | `MONITOR_STABLE_AFTER` | `10s` | 建连后开始稳定性监测的延时 |
 | `NODE_QUARANTINE` | `5m` | 节点失败后的基础隔离时间 |
 | `BYPASS_ROUTE_TABLE` | `100` | Linux 策略路由表编号 |
-| `BYPASS_FWMARK` | `1` | Linux 路由标记 |
+| `BYPASS_FWMARK` | `1` | Linux 直连保留路由标记 |
+| `VPN_ROUTE_TABLE` | `101` | SOCKS5 出站使用的 Linux 策略路由表 |
+| `VPN_FWMARK` | `2` | SOCKS5 出站使用的 Linux 路由标记 |
 
 ## HTTP 接口
 

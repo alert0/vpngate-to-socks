@@ -3,6 +3,7 @@ package runner
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -22,6 +23,10 @@ import (
 const runnerLogTailLimit = 80
 
 const openVPNConnectTimeoutGrace = 2 * time.Second
+
+const openVPNDisconnectTimeout = 5 * time.Second
+
+const vpnTunnelInterface = "tun0"
 
 type Runner struct {
 	logger *log.Logger
@@ -53,6 +58,7 @@ type Runner struct {
 	monitorIPs              []string
 	monitorCancel           context.CancelFunc
 	quarantine              map[string]nodeHealth
+	tunnelInterface         string
 }
 
 type openVPNScanResult struct {
@@ -89,12 +95,14 @@ func New(logger *log.Logger, socksListenAddr string, bypassCIDRs []string, autoC
 		httpClient:  &http.Client{Timeout: autoConfig.FetchTimeout},
 		quarantine:  make(map[string]nodeHealth),
 	}
+	r.clearVPNPolicyRouting()
 
 	socks, err := newSOCKSServer(logger, socksListenAddr, r.canProxy)
 	if err != nil {
 		return nil, err
 	}
 
+	socks.setDialRemote(r.dialVPN)
 	r.socks = socks
 	return r, nil
 }
@@ -112,7 +120,35 @@ func (r *Runner) Close() error {
 		_ = r.socks.Close()
 	}
 
-	return r.Disconnect()
+	err := r.Disconnect()
+	r.clearVPNPolicyRouting()
+	return err
+}
+
+func (r *Runner) stopOpenVPNProcess(cmd *exec.Cmd) error {
+	if cmd == nil || cmd.Process == nil {
+		return nil
+	}
+
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		if killErr := cmd.Process.Kill(); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
+			return fmt.Errorf("停止 openvpn 失败: %w", killErr)
+		}
+	}
+
+	time.AfterFunc(openVPNDisconnectTimeout, func() {
+		r.mu.RLock()
+		shouldKill := r.proc == cmd && r.disconnectRequested && r.state == StateDisconnecting
+		r.mu.RUnlock()
+		if !shouldKill || cmd.Process == nil {
+			return
+		}
+
+		r.logger.Printf("Runner 等待 OpenVPN 退出超时，正在强制终止进程")
+		_ = cmd.Process.Kill()
+	})
+
+	return nil
 }
 
 func (r *Runner) Status() Status {
@@ -170,6 +206,7 @@ func (r *Runner) Connect(server vpngate.Server) error {
 	r.monitorFailureCount = 0
 	r.connectHandshakeSeen = false
 	r.connectTimeoutTriggered = false
+	r.tunnelInterface = vpnTunnelInterface
 	r.logTail = r.logTail[:0]
 	r.mu.Unlock()
 
@@ -271,7 +308,7 @@ func (r *Runner) Connect(server vpngate.Server) error {
 	r.mu.Unlock()
 
 	if disconnectRequested && cmd.Process != nil {
-		_ = cmd.Process.Signal(syscall.SIGTERM)
+		_ = r.stopOpenVPNProcess(cmd)
 	}
 
 	r.logger.Printf("Runner 开始连接节点：%s（%s）", server.HostName, server.IP)
@@ -317,10 +354,9 @@ func (r *Runner) Disconnect() error {
 	r.monitorFailureCount = 0
 	r.updatedAt = time.Now()
 
-	if err := r.proc.Process.Signal(syscall.SIGTERM); err != nil {
-		if killErr := r.proc.Process.Kill(); killErr != nil {
-			return fmt.Errorf("停止 openvpn 失败: %w", err)
-		}
+	cmd := r.proc
+	if err := r.stopOpenVPNProcess(cmd); err != nil {
+		return err
 	}
 
 	return nil
@@ -393,14 +429,15 @@ func (r *Runner) scanOpenVPNOutput(reader io.Reader) openVPNScanResult {
 		r.appendLog(line)
 
 		if !connected && strings.Contains(line, vpngate.OpenVPNSuccessMarker) {
-			r.markConnectHandshakeSeen()
 			if err := r.applyBypassRoutes(); err != nil {
 				r.logger.Printf("Runner 应用局域网保留路由失败：%v", err)
 				r.setLastError(err.Error())
+				continue
 			} else if len(r.bypassCIDRs) > 0 {
 				r.logger.Printf("Runner 已应用局域网保留路由：%s", strings.Join(r.bypassCIDRs, ", "))
 			}
 
+			r.markConnectHandshakeSeen()
 			connected = true
 			r.markConnected()
 			r.startMonitorLoop()
@@ -413,6 +450,7 @@ func (r *Runner) scanOpenVPNOutput(reader io.Reader) openVPNScanResult {
 func (r *Runner) waitOpenVPN(cmd *exec.Cmd, writer *io.PipeWriter, scanDone <-chan openVPNScanResult, configPath string, summary *ConnectionInfo) {
 	waitErr := cmd.Wait()
 	r.stopMonitorLoop()
+	r.clearVPNPolicyRouting()
 	_ = writer.Close()
 	scanResult := <-scanDone
 	_ = os.Remove(configPath)
@@ -616,16 +654,19 @@ func (r *Runner) applyBypassRoutes() error {
 	gateway := r.originalGateway
 	iface := r.originalInterface
 	autoConfig := r.autoConfig
+	tunnelInterface := r.tunnelInterface
 	r.mu.RUnlock()
 
 	bypassCIDRs = sanitizeBypassCIDRs(bypassCIDRs)
 	localCIDRs = sanitizeLocalBypassRoutes(localCIDRs)
 
-	if len(bypassCIDRs) == 0 && len(localCIDRs) == 0 && !autoConfig.Enabled {
+	needBypassRoutes := len(bypassCIDRs) > 0 || len(localCIDRs) > 0 || autoConfig.Enabled
+	needVPNRoutes := strings.TrimSpace(tunnelInterface) != "" && autoConfig.VPNRouteTable > 0 && autoConfig.VPNMark > 0
+	if !needBypassRoutes && !needVPNRoutes {
 		return nil
 	}
 
-	if (autoConfig.Enabled || len(bypassCIDRs) > 0) && (strings.TrimSpace(gateway) == "" || strings.TrimSpace(iface) == "") {
+	if needBypassRoutes && (strings.TrimSpace(gateway) == "" || strings.TrimSpace(iface) == "") {
 		return fmt.Errorf("缺少原始网关或接口信息，无法应用局域网保留路由")
 	}
 
@@ -636,6 +677,12 @@ func (r *Runner) applyBypassRoutes() error {
 
 	if autoConfig.Enabled {
 		if err := ensureBypassPolicyRouting(ipExecutable, gateway, iface, autoConfig.BypassRouteTable, autoConfig.BypassMark); err != nil {
+			return err
+		}
+	}
+
+	if needVPNRoutes {
+		if err := ensureVPNPolicyRouting(ipExecutable, tunnelInterface, autoConfig.VPNRouteTable, autoConfig.VPNMark); err != nil {
 			return err
 		}
 	}
@@ -658,6 +705,15 @@ func (r *Runner) applyBypassRoutes() error {
 	}
 
 	return nil
+}
+
+func (r *Runner) dialVPN(network, address string) (net.Conn, error) {
+	r.mu.RLock()
+	mark := r.autoConfig.VPNMark
+	r.mu.RUnlock()
+
+	dialContext := newMarkedDialContext(15*time.Second, mark)
+	return dialContext(context.Background(), network, address)
 }
 
 func buildBypassRouteSpecs(bypassCIDRs []string, localCIDRs []localBypassRoute, gateway, originalInterface string) []bypassRouteSpec {
@@ -732,6 +788,49 @@ ensureRule:
 	}
 
 	return nil
+}
+
+func ensureVPNPolicyRouting(ipExecutable, iface string, table, mark int) error {
+	routeArgs := []string{"route", "replace", "default", "dev", iface, "table", fmt.Sprintf("%d", table)}
+	output, err := exec.Command(ipExecutable, routeArgs...).CombinedOutput()
+	if err != nil {
+		trimmed := strings.TrimSpace(string(output))
+		if trimmed == "" {
+			return fmt.Errorf("应用 VPN 策略路由失败: %w", err)
+		}
+
+		return fmt.Errorf("应用 VPN 策略路由失败: %s", trimmed)
+	}
+
+	ruleArgs := []string{"rule", "add", "fwmark", fmt.Sprintf("%d", mark), "table", fmt.Sprintf("%d", table)}
+	output, err = exec.Command(ipExecutable, ruleArgs...).CombinedOutput()
+	if err != nil {
+		trimmed := strings.TrimSpace(string(output))
+		if strings.Contains(trimmed, "File exists") {
+			return nil
+		}
+		if trimmed == "" {
+			return fmt.Errorf("应用 VPN 策略路由失败: %w", err)
+		}
+
+		return fmt.Errorf("应用 VPN 策略路由失败: %s", trimmed)
+	}
+
+	return nil
+}
+
+func (r *Runner) clearVPNPolicyRouting() {
+	if r == nil || r.autoConfig.VPNRouteTable <= 0 || r.autoConfig.VPNMark <= 0 {
+		return
+	}
+
+	ipExecutable, err := resolveIPExecutable()
+	if err != nil {
+		return
+	}
+
+	_, _ = exec.Command(ipExecutable, "route", "flush", "table", fmt.Sprintf("%d", r.autoConfig.VPNRouteTable)).CombinedOutput()
+	_, _ = exec.Command(ipExecutable, "rule", "del", "fwmark", fmt.Sprintf("%d", r.autoConfig.VPNMark), "table", fmt.Sprintf("%d", r.autoConfig.VPNRouteTable)).CombinedOutput()
 }
 
 func discoverDefaultRoute() (string, string, error) {

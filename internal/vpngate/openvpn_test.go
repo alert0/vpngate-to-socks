@@ -90,8 +90,21 @@ func TestBuildOpenVPNConnectArgsUsesReferenceCompatibleFlags(t *testing.T) {
 	args := BuildOpenVPNConnectArgs("/tmp/example.ovpn", "")
 
 	assertArgValue(t, args, "--data-ciphers", openVPNDefaultCipher)
+	assertArgPresent(t, args, "--route-nopull")
 	assertArgAbsent(t, args, "--connect-timeout")
 	assertArgAbsent(t, args, "--connect-retry-max")
+}
+
+func assertArgPresent(t *testing.T, args []string, key string) {
+	t.Helper()
+
+	for _, arg := range args {
+		if arg == key {
+			return
+		}
+	}
+
+	t.Fatalf("arg %s not found in %v", key, args)
 }
 
 func TestBuildOpenVPNTestArgsIncludesFastFailTimeout(t *testing.T) {
