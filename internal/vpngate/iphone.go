@@ -6,18 +6,34 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 const (
 	// IPhoneAPIURL is the VPN Gate endpoint that returns the iPhone/OpenVPN server list.
 	IPhoneAPIURL = "https://www.vpngate.net/api/iphone/"
+	mirrorSitesURL = "https://www.vpngate.net/en/sites.aspx"
 
 	iphoneListMarker = "*vpn_servers"
 	responseFooter   = "*"
 	maxResponseBytes = 10 << 20
+	maxMirrorBytes   = 1 << 20
+	mirrorCacheTTL   = 30 * time.Minute
+	upstreamTimeout  = 45 * time.Second
 	unknownPing      = -1
+)
+
+var (
+	mirrorURLPattern = regexp.MustCompile(`https?://(?:[0-9]{1,3}\.){3}[0-9]{1,3}:[0-9]{2,5}/en/?`)
+	mirrorCache      struct {
+		sync.Mutex
+		expiresAt time.Time
+		urls      []string
+	}
 )
 
 var iphoneHeader = []string{
@@ -63,10 +79,71 @@ func FetchIPhoneServers(ctx context.Context, client *http.Client) ([]Server, err
 		client = http.DefaultClient
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, IPhoneAPIURL, nil)
+	primaryCtx, cancel := context.WithTimeout(ctx, upstreamTimeout)
+	servers, primaryErr := fetchIPhoneServersFromURL(primaryCtx, client, IPhoneAPIURL)
+	cancel()
+	if primaryErr == nil {
+		return servers, nil
+	}
+
+	mirrorListCtx, cancel := context.WithTimeout(ctx, upstreamTimeout)
+	mirrorURLs, mirrorListErr := fetchMirrorAPIURLs(mirrorListCtx, client)
+	cancel()
+	if mirrorListErr != nil {
+		return nil, fmt.Errorf("主站请求失败，且获取 VPNGate 镜像列表失败: %w", mirrorListErr)
+	}
+
+	servers, mirrorErr := fetchFromMirrors(ctx, client, mirrorURLs)
+	if mirrorErr != nil {
+		return nil, fmt.Errorf("主站请求失败，尝试 %d 个 VPNGate 镜像后仍失败: %w", len(mirrorURLs), mirrorErr)
+	}
+
+	return servers, nil
+}
+
+func fetchFromMirrors(ctx context.Context, client *http.Client, mirrorURLs []string) ([]Server, error) {
+	if len(mirrorURLs) == 0 {
+		return nil, fmt.Errorf("没有可用的 VPNGate 镜像入口")
+	}
+
+	type result struct {
+		url     string
+		servers []Server
+		err     error
+	}
+
+	attemptCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make(chan result, len(mirrorURLs))
+	for _, apiURL := range mirrorURLs {
+		go func(apiURL string) {
+			requestCtx, requestCancel := context.WithTimeout(attemptCtx, upstreamTimeout)
+			servers, err := fetchIPhoneServersFromURL(requestCtx, client, apiURL)
+			requestCancel()
+			results <- result{url: apiURL, servers: servers, err: err}
+		}(apiURL)
+	}
+
+	var lastErr error
+	for range mirrorURLs {
+		result := <-results
+		if result.err == nil {
+			return result.servers, nil
+		}
+		lastErr = fmt.Errorf("镜像 %s 请求失败: %w", result.url, result.err)
+	}
+
+	return nil, lastErr
+}
+
+func fetchIPhoneServersFromURL(ctx context.Context, client *http.Client, apiURL string) ([]Server, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("创建请求失败: %w", err)
 	}
+	// Some VPNGate mirrors hang when they receive Go's default gzip request.
+	// Ask for the plain response so the mirror can stream the API body normally.
+	req.Header.Set("Accept-Encoding", "identity")
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -79,6 +156,70 @@ func FetchIPhoneServers(ctx context.Context, client *http.Client) ([]Server, err
 	}
 
 	return ParseIPhoneResponse(io.LimitReader(resp.Body, maxResponseBytes))
+}
+
+func fetchMirrorAPIURLs(ctx context.Context, client *http.Client) ([]string, error) {
+	now := time.Now()
+
+	mirrorCache.Lock()
+	if now.Before(mirrorCache.expiresAt) {
+		urls := append([]string(nil), mirrorCache.urls...)
+		mirrorCache.Unlock()
+		return urls, nil
+	}
+	mirrorCache.Unlock()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, mirrorSitesURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("创建 VPNGate 镜像列表请求失败: %w", err)
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("获取 VPNGate 镜像列表失败: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("镜像列表返回异常状态: %s", resp.Status)
+	}
+
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxMirrorBytes))
+	if err != nil {
+		return nil, fmt.Errorf("读取 VPNGate 镜像列表失败: %w", err)
+	}
+
+	urls := buildMirrorAPIURLs(string(raw))
+	if len(urls) == 0 {
+		return nil, fmt.Errorf("VPNGate 镜像列表中没有可用入口")
+	}
+
+	mirrorCache.Lock()
+	mirrorCache.urls = append([]string(nil), urls...)
+	mirrorCache.expiresAt = time.Now().Add(mirrorCacheTTL)
+	mirrorCache.Unlock()
+
+	return urls, nil
+}
+
+func buildMirrorAPIURLs(raw string) []string {
+	matches := mirrorURLPattern.FindAllString(raw, -1)
+	urls := make([]string, 0, len(matches))
+	seen := make(map[string]struct{}, len(matches))
+	for _, match := range matches {
+		base := strings.TrimSuffix(strings.TrimRight(match, "/"), "/en")
+		apiURL := base + "/api/iphone/"
+		if apiURL == IPhoneAPIURL {
+			continue
+		}
+		if _, ok := seen[apiURL]; ok {
+			continue
+		}
+		seen[apiURL] = struct{}{}
+		urls = append(urls, apiURL)
+	}
+
+	return urls
 }
 
 // ParseIPhoneResponse parses the VPN Gate iPhone API response body into server records.

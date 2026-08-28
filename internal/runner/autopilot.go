@@ -66,7 +66,7 @@ func (c AutoPilotConfig) withDefaults() AutoPilotConfig {
 		c.MonitorTimeout = 6 * time.Second
 	}
 	if c.FetchTimeout <= 0 {
-		c.FetchTimeout = 30 * time.Second
+		c.FetchTimeout = 60 * time.Second
 	}
 	if c.ConnectCooldown <= 0 {
 		c.ConnectCooldown = 5 * time.Second

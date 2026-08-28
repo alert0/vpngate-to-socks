@@ -24,12 +24,14 @@ func main() {
 		logger.Fatalf("初始化页面服务失败：%v", err)
 	}
 
-	startupCtx, startupCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer startupCancel()
+	go func() {
+		startupCtx, startupCancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer startupCancel()
 
-	if err := app.Refresh(startupCtx); err != nil {
-		logger.Printf("启动时首次刷新失败，服务仍会继续启动：%v", err)
-	}
+		if err := app.Refresh(startupCtx); err != nil {
+			logger.Printf("启动时首次刷新失败，服务仍会继续启动：%v", err)
+		}
+	}()
 
 	certFile, keyFile, tlsEnabled, err := webTLSConfig()
 	if err != nil {

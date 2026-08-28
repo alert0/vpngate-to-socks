@@ -148,7 +148,7 @@ func NewApp(logger *log.Logger, client *http.Client, runnerClient RunnerControl)
 	}
 
 	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
+		client = &http.Client{Timeout: 60 * time.Second}
 	}
 
 	tmpl, err := template.ParseFS(templateFS, "templates/*.html")
@@ -251,7 +251,7 @@ func (a *App) handleRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 
 	notice := "节点数据已刷新"

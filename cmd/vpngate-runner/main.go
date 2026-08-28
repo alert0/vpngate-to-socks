@@ -110,7 +110,7 @@ func autoPilotConfig() runner.AutoPilotConfig {
 		OpenVPNConnectTimeout:   envDuration("OPENVPN_CONNECT_TIMEOUT", 30*time.Second),
 		MonitorInterval:         envDuration("MONITOR_INTERVAL", 20*time.Second),
 		MonitorTimeout:          envDuration("MONITOR_TIMEOUT", 6*time.Second),
-		FetchTimeout:            envDuration("FETCH_TIMEOUT", 30*time.Second),
+		FetchTimeout:            envDuration("FETCH_TIMEOUT", 60*time.Second),
 		ConnectCooldown:         envDuration("CONNECT_COOLDOWN", 5*time.Second),
 		StableAfter:             envDuration("MONITOR_STABLE_AFTER", 10*time.Second),
 		BaseQuarantine:          envDuration("NODE_QUARANTINE", 5*time.Minute),

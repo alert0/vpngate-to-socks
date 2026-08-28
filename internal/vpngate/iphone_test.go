@@ -1,6 +1,10 @@
 package vpngate
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -68,6 +72,43 @@ func TestParseIPhoneResponse(t *testing.T) {
 				t.Fatalf("len(servers) = %d, want %d", len(servers), tt.wantLen)
 			}
 		})
+	}
+}
+
+func TestBuildMirrorAPIURLs(t *testing.T) {
+	raw := `
+		<a href="http://150.40.105.24:38827/en/">mirror</a>
+		http://150.40.105.24:38827/en/
+		http://14.6.112.108:34751/en/
+		https://www.vpngate.net/en/
+	`
+
+	got := buildMirrorAPIURLs(raw)
+	want := []string{
+		"http://150.40.105.24:38827/api/iphone/",
+		"http://14.6.112.108:34751/api/iphone/",
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("buildMirrorAPIURLs() = %#v, want %#v", got, want)
+	}
+}
+
+func TestFetchIPhoneServersFromURLRequestsIdentityEncoding(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.Header.Get("Accept-Encoding"), "identity"; got != want {
+			t.Errorf("Accept-Encoding = %q, want %q", got, want)
+		}
+		_, _ = w.Write([]byte(sampleResponse))
+	}))
+	defer server.Close()
+
+	servers, err := fetchIPhoneServersFromURL(context.Background(), server.Client(), server.URL)
+	if err != nil {
+		t.Fatalf("fetchIPhoneServersFromURL() error = %v", err)
+	}
+	if len(servers) == 0 {
+		t.Fatal("fetchIPhoneServersFromURL() returned no servers")
 	}
 }
 
