@@ -143,6 +143,25 @@ func NewAPIHandler(logger *log.Logger, runner *Runner) http.Handler {
 		writeJSON(w, http.StatusOK, testResponse{Result: result})
 	})
 
+	mux.HandleFunc("/probe", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "仅支持 POST 请求", http.StatusMethodNotAllowed)
+			return
+		}
+
+		if err := runner.ProbeConnectivity(r.Context()); err != nil {
+			statusCode := http.StatusBadGateway
+			status := runner.Status()
+			if status.State != StateConnected {
+				statusCode = http.StatusConflict
+			}
+			writeJSON(w, statusCode, connectResponse{Status: status, Error: err.Error()})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, connectResponse{Status: runner.Status()})
+	})
+
 	mux.HandleFunc("/disconnect", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "仅支持 POST 请求", http.StatusMethodNotAllowed)

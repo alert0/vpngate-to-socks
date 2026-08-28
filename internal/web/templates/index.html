@@ -778,6 +778,11 @@
           </form>
           {{end}}
           {{end}}
+          {{if .VPNCanProbe}}
+          <form class="js-vpn-form" method="post" action="/vpn/probe">
+            <button class="btn btn-secondary" type="submit" data-default-label="探测 VPN 联通性" data-pending-label="探测中…">探测 VPN 联通性</button>
+          </form>
+          {{end}}
           {{if .VPNCanDisconnect}}
           <form class="js-vpn-form" method="post" action="/vpn/disconnect">
             <button class="btn btn-secondary" type="submit" data-default-label="断开连接" data-pending-label="断开中…">断开连接</button>
@@ -849,15 +854,18 @@
         <div class="toolbar" style="padding: 22px 22px 0;">
           <div>
             <h2>在线节点列表</h2>
-            <p>数据来源：VPNGate iPhone API ｜ 最近刷新耗时：{{.RefreshDuration}} ｜ 测试方式：仅支持单节点 OpenVPN 测试</p>
+            <p>数据来源：VPNGate iPhone API ｜ 最近刷新耗时：{{.RefreshDuration}} ｜ 探测方式：OpenVPN 握手后自动断开</p>
           </div>
           <div class="toolbar-actions">
             <span class="pill">当前结果：{{.TotalCount}} / {{.SourceCount}} 条</span>
             <span class="pill">协议类型：OpenVPN</span>
+            <button class="btn btn-primary-soft btn-compact js-probe-all" type="button" data-default-label="探测当前结果">探测当前结果</button>
+            <span class="pill" id="probe-all-progress">未开始</span>
           </div>
         </div>
         <div class="table-hint">
-          <span class="pill">测试按钮已移动到“节点名称”列，首屏即可直接发起</span>
+          <span class="pill">可单独探测节点，也可按当前筛选结果逐个探测</span>
+          <span class="pill">批量探测串行执行，不会同时启动多个 OpenVPN</span>
           <span class="pill">如需查看更多字段，可横向滚动表格</span>
         </div>
 
@@ -890,7 +898,7 @@
                 </td>
                 <td class="server-cell">
                   <div class="name">{{.Name}}</div>
-                  <div class="subtext">支持直接发起单节点 OpenVPN 测试</div>
+                  <div class="subtext">支持直接发起单节点 VPN 联通性探测</div>
                   <div class="server-actions" data-server-key="{{.ServerKey}}">
                     <div class="server-action-buttons">
                       {{if .IsVPNActive}}
@@ -909,7 +917,7 @@
                         <input type="hidden" name="ip" value="{{.IP}}">
                         <input type="hidden" name="q" value="{{$.Query}}">
                         <input type="hidden" name="country" value="{{$.SelectedCountry}}">
-                        <button class="btn btn-secondary btn-compact" type="submit" data-default-label="测试节点">测试节点</button>
+                        <button class="btn btn-secondary btn-compact" type="submit" data-default-label="探测联通性">探测联通性</button>
                       </form>
                     </div>
                     <div class="test-feedback">
@@ -1012,7 +1020,7 @@
         const statusEl = container.querySelector('[data-role="test-status"]');
         const detailEl = container.querySelector('[data-role="test-detail"]');
         if (statusEl) {
-          statusEl.textContent = payload.status || '未测试';
+          statusEl.textContent = payload.status || '未探测';
           statusEl.classList.remove('test-idle', 'test-running', 'test-success', 'test-failure');
           if (payload.className) {
             statusEl.classList.add(payload.className);
@@ -1039,59 +1047,150 @@
         }
       }
 
+      async function runNodeProbe(form, options = {}) {
+        const button = form.querySelector('button[type="submit"]');
+        const actionBox = form.closest('.server-actions');
+        if (!button || !actionBox) return { ok: false, error: '节点探测控件不可用' };
+
+        const signal = options.signal;
+        const showSuccessToast = options.showSuccessToast !== false;
+        const defaultLabel = button.dataset.defaultLabel || button.textContent.trim();
+        const payload = new URLSearchParams(new FormData(form));
+        button.disabled = true;
+        button.textContent = '探测中…';
+        updateTestUI(actionBox, {
+          status: '探测中',
+          className: 'test-running',
+          detail: '正在建立 OpenVPN 隧道并确认握手，完成后会自动断开',
+        });
+
+        try {
+          const response = await fetch(form.action, {
+            method: 'POST',
+            body: payload,
+            signal,
+            headers: {
+              'Accept': 'application/json',
+              'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+              'X-Requested-With': 'fetch',
+            },
+          });
+          const data = await parseJSONSafe(response);
+
+          if (data.test) {
+            updateTestUI(actionBox, data.test);
+          }
+
+          if (!response.ok || !data.ok) {
+            const error = new Error(data.error || '节点联通性探测失败，请稍后重试');
+            if (!data.test) {
+              updateTestUI(actionBox, {
+                status: '探测失败',
+                className: 'test-failure',
+                detail: error.message,
+              });
+            }
+            if (showSuccessToast) showToast(error.message, 'error');
+            return { ok: false, error: error.message };
+          }
+
+          if (showSuccessToast) showToast(data.notice || '节点联通性探测完成', 'success');
+          return { ok: true, data };
+        } catch (error) {
+          if (error && error.name === 'AbortError') {
+            updateTestUI(actionBox, {
+              status: '已停止',
+              className: 'test-idle',
+              detail: '批量探测已停止，未继续测试此节点',
+            });
+            return { ok: false, canceled: true, error: '批量探测已停止' };
+          }
+
+          const message = error instanceof Error ? error.message : '节点联通性探测失败，请稍后重试';
+          updateTestUI(actionBox, {
+            status: '探测失败',
+            className: 'test-failure',
+            detail: message,
+          });
+          if (showSuccessToast) showToast(message, 'error');
+          return { ok: false, error: message };
+        } finally {
+          button.disabled = false;
+          button.textContent = defaultLabel;
+        }
+      }
+
       document.querySelectorAll('.js-test-form').forEach((form) => {
         form.addEventListener('submit', async (event) => {
           event.preventDefault();
-
-          const button = form.querySelector('button[type="submit"]');
-          const actionBox = form.closest('.server-actions');
-          if (!button || !actionBox) return;
-
-          const defaultLabel = button.dataset.defaultLabel || button.textContent.trim();
-          const payload = new URLSearchParams(new FormData(form));
-          button.disabled = true;
-          button.textContent = '测试中…';
-          updateTestUI(actionBox, {
-            status: '测试中',
-            className: 'test-running',
-            detail: 'OpenVPN 正在尝试建立连接，请耐心等待测试完成',
-          });
-
-          try {
-            const response = await fetch(form.action, {
-              method: 'POST',
-              body: payload,
-              headers: {
-                'Accept': 'application/json',
-                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-                'X-Requested-With': 'fetch',
-              },
-            });
-            const data = await parseJSONSafe(response);
-
-            if (data.test) {
-              updateTestUI(actionBox, data.test);
-            }
-
-            if (!response.ok || !data.ok) {
-              throw new Error(data.error || '节点测试失败，请稍后重试');
-            }
-
-            showToast(data.notice || '节点测试已完成', 'success');
-          } catch (error) {
-            const message = error instanceof Error ? error.message : '节点测试失败，请稍后重试';
-            updateTestUI(actionBox, {
-              status: '测试失败',
-              className: 'test-failure',
-              detail: message,
-            });
-            showToast(message, 'error');
-          } finally {
-            button.disabled = false;
-            button.textContent = defaultLabel;
-          }
+          await runNodeProbe(form);
         });
       });
+
+      const probeAllButton = document.querySelector('.js-probe-all');
+      const probeAllProgress = document.getElementById('probe-all-progress');
+      let probeAllController = null;
+
+      if (probeAllButton) {
+        probeAllButton.addEventListener('click', async () => {
+          if (probeAllController) {
+            probeAllController.abort();
+            return;
+          }
+
+          const forms = Array.from(document.querySelectorAll('.js-test-form'));
+          if (forms.length === 0) {
+            showToast('当前筛选结果没有可探测的节点', 'info');
+            return;
+          }
+
+          const controller = new AbortController();
+          probeAllController = controller;
+          probeAllButton.textContent = '停止探测';
+          probeAllButton.dataset.running = 'true';
+          if (probeAllProgress) probeAllProgress.textContent = `准备探测，共 ${forms.length} 条`;
+
+          let passed = 0;
+          let failed = 0;
+          let stopped = false;
+
+          try {
+            for (let index = 0; index < forms.length; index += 1) {
+              if (controller.signal.aborted) {
+                stopped = true;
+                break;
+              }
+
+              const result = await runNodeProbe(forms[index], {
+                signal: controller.signal,
+                showSuccessToast: false,
+              });
+              if (result.canceled) {
+                stopped = true;
+                break;
+              }
+              if (result.ok) passed += 1;
+              else failed += 1;
+
+              if (probeAllProgress) {
+                probeAllProgress.textContent = `已探测 ${index + 1} / ${forms.length}，通过 ${passed}，失败 ${failed}`;
+              }
+            }
+
+            if (stopped) {
+              if (probeAllProgress) probeAllProgress.textContent = `已停止：完成 ${passed + failed} / ${forms.length}，通过 ${passed}，失败 ${failed}`;
+              showToast('批量 VPN 联通性探测已停止', 'info');
+            } else {
+              if (probeAllProgress) probeAllProgress.textContent = `完成：${forms.length} 条，通过 ${passed}，失败 ${failed}`;
+              showToast(`批量探测完成：通过 ${passed} 条，失败 ${failed} 条`, failed ? 'info' : 'success');
+            }
+          } finally {
+            probeAllController = null;
+            probeAllButton.textContent = probeAllButton.dataset.defaultLabel || '探测当前结果';
+            delete probeAllButton.dataset.running;
+          }
+        });
+      }
 
       document.querySelectorAll('.js-refresh-form').forEach((form) => {
         form.addEventListener('submit', async (event) => {

@@ -43,6 +43,7 @@ type RunnerControl interface {
 	Status(ctx context.Context) (runner.Status, error)
 	Connect(ctx context.Context, server vpngate.Server) (runner.Status, error)
 	Disconnect(ctx context.Context) (runner.Status, error)
+	Probe(ctx context.Context) error
 	TestServer(ctx context.Context, server vpngate.Server) (vpngate.OpenVPNTestResult, error)
 }
 
@@ -78,6 +79,7 @@ type PageData struct {
 	VPNCurrentIP        string
 	VPNConnectedSince   string
 	VPNCanDisconnect    bool
+	VPNCanProbe         bool
 }
 
 type CountryOption struct {
@@ -174,6 +176,7 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("/vpn/connect/recommended", a.handleVPNConnectRecommended)
 	mux.HandleFunc("/vpn/connect", a.handleVPNConnect)
 	mux.HandleFunc("/vpn/disconnect", a.handleVPNDisconnect)
+	mux.HandleFunc("/vpn/probe", a.handleVPNProbe)
 	mux.HandleFunc("/vpn/status", a.handleVPNStatus)
 	mux.HandleFunc("/health", a.handleHealth)
 
@@ -329,19 +332,19 @@ func (a *App) handleServerTest(w http.ResponseWriter, r *http.Request) {
 			<-a.testSlot
 		}()
 	default:
-		respondTestAction(http.StatusConflict, false, "", "已有节点正在进行 OpenVPN 测试，请等待当前测试结束后再试", &server, nil)
+		respondTestAction(http.StatusConflict, false, "", "已有节点正在进行 VPN 联通性探测，请等待当前探测结束后再试", &server, nil)
 		return
 	}
 
 	key := serverTestKey(server.HostName, server.IP)
 	a.setServerTestState(key, serverTestState{
-		Status:    "测试中",
+		Status:    "探测中",
 		ClassName: "test-running",
-		Detail:    "OpenVPN 正在尝试建立连接，请耐心等待测试完成",
+		Detail:    "正在建立 OpenVPN 隧道并确认握手，完成后会自动断开",
 		UpdatedAt: time.Now(),
 	})
 
-	a.logger.Printf("开始测试节点：%s（%s）", server.HostName, server.IP)
+	a.logger.Printf("开始探测节点联通性：%s（%s）", server.HostName, server.IP)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
 	defer cancel()
@@ -356,15 +359,15 @@ func (a *App) handleServerTest(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		failureDetail := err.Error()
 		failureState := serverTestState{
-			Status:    "测试失败",
+			Status:    "探测失败",
 			ClassName: "test-failure",
 			Detail:    failureDetail,
 			UpdatedAt: time.Now(),
 		}
 		a.setServerTestState(key, failureState)
 
-		a.logger.Printf("测试节点失败：%s（%s）：%v", server.HostName, server.IP, err)
-		respondTestAction(http.StatusOK, false, "", fmt.Sprintf("节点 %s 测试失败：%s", server.HostName, failureDetail), &server, &failureState)
+		a.logger.Printf("节点联通性探测失败：%s（%s）：%v", server.HostName, server.IP, err)
+		respondTestAction(http.StatusOK, false, "", fmt.Sprintf("节点 %s 联通性探测失败：%s", server.HostName, failureDetail), &server, &failureState)
 		return
 	}
 
@@ -376,15 +379,15 @@ func (a *App) handleServerTest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	successState := serverTestState{
-		Status:    "测试通过",
+		Status:    "探测通过",
 		ClassName: "test-success",
 		Detail:    successDetail,
 		UpdatedAt: time.Now(),
 	}
 	a.setServerTestState(key, successState)
 
-	a.logger.Printf("测试节点成功：%s（%s），耗时 %s", server.HostName, server.IP, formatDurationCN(result.Duration))
-	respondTestAction(http.StatusOK, true, fmt.Sprintf("节点 %s 测试通过，用时 %s", server.HostName, formatDurationCN(result.Duration)), "", &server, &successState)
+	a.logger.Printf("节点联通性探测成功：%s（%s），耗时 %s", server.HostName, server.IP, formatDurationCN(result.Duration))
+	respondTestAction(http.StatusOK, true, fmt.Sprintf("节点 %s 联通性探测通过，用时 %s", server.HostName, formatDurationCN(result.Duration)), "", &server, &successState)
 }
 
 func (a *App) handleVPNConnect(w http.ResponseWriter, r *http.Request) {
@@ -575,6 +578,42 @@ func (a *App) handleVPNDisconnect(w http.ResponseWriter, r *http.Request) {
 	respond(http.StatusOK, true, "已发送断开连接请求", "")
 }
 
+func (a *App) handleVPNProbe(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		a.writeActionError(w, r, http.StatusMethodNotAllowed, "仅支持 POST 请求")
+		return
+	}
+
+	if err := validateSameOriginRequest(r); err != nil {
+		a.writeActionError(w, r, http.StatusForbidden, err.Error())
+		return
+	}
+
+	respond := func(statusCode int, ok bool, notice, flashError string) {
+		if wantsJSONResponse(r) {
+			a.writeJSON(w, statusCode, actionResponse{OK: ok, Notice: notice, Error: flashError})
+			return
+		}
+
+		http.Redirect(w, r, buildIndexURL(notice, flashError, "", ""), http.StatusSeeOther)
+	}
+
+	if a.runner == nil || !a.runner.Enabled() {
+		respond(http.StatusServiceUnavailable, false, "", "VPN Runner 未配置，暂时无法探测联通性")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	if err := a.runner.Probe(ctx); err != nil {
+		respond(http.StatusBadGateway, false, "", fmt.Sprintf("VPN 联通性探测失败：%v", err))
+		return
+	}
+
+	respond(http.StatusOK, true, "VPN 联通性探测通过，SOCKS5 已确认可以访问监测地址", "")
+}
+
 func (a *App) handleVPNStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		http.Error(w, "仅支持 GET 请求", http.StatusMethodNotAllowed)
@@ -612,6 +651,7 @@ func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (a *App) buildPageData(notice, flashError, query, selectedCountry string) PageData {
 	runnerStatus, runnerErr := a.fetchRunnerStatus()
 	vpnStatusText, vpnStatusClass, vpnStatusDetail, vpnCurrentNode, vpnCurrentIP, vpnConnectedSince, vpnCanDisconnect := formatVPNStatus(runnerStatus, runnerErr)
+	vpnCanProbe := runnerErr == nil && runnerStatus.State == runner.StateConnected
 
 	a.mu.RLock()
 	servers := append([]vpngate.Server(nil), a.servers...)
@@ -709,7 +749,7 @@ func (a *App) buildPageData(notice, flashError, query, selectedCountry string) P
 
 	return PageData{
 		Title:               "VPNGate 节点管理页面",
-		Description:         "用于浏览当前可用的 VPNGate 在线节点，并支持按关键词与国家快速筛选。你现在还可以针对单个节点发起 OpenVPN 测试；测试会在当前服务所在主机上执行，成功握手后自动断开，不再提供一键全测。请确保宿主机已安装 openvpn，并具备创建网络接口所需权限。",
+		Description:         "用于浏览当前可用的 VPNGate 在线节点，并支持按关键词与国家快速筛选。可逐个或批量发起 VPN 联通性探测；探测会串行建立 OpenVPN 隧道并自动断开，已有连接还可验证 SOCKS5 的实际外网连通性。请确保宿主机已安装 openvpn，并具备创建网络接口所需权限。",
 		StatusText:          statusText,
 		StatusClass:         statusClass,
 		Notice:              notice,
@@ -739,6 +779,7 @@ func (a *App) buildPageData(notice, flashError, query, selectedCountry string) P
 		VPNCurrentIP:        vpnCurrentIP,
 		VPNConnectedSince:   vpnConnectedSince,
 		VPNCanDisconnect:    vpnCanDisconnect,
+		VPNCanProbe:         vpnCanProbe,
 	}
 }
 
@@ -907,9 +948,9 @@ func serverTestKey(hostName, ip string) string {
 func formatServerTestState(state serverTestState) serverTestState {
 	if strings.TrimSpace(state.Status) == "" {
 		return serverTestState{
-			Status:    "未测试",
+			Status:    "未探测",
 			ClassName: "test-idle",
-			Detail:    "可点击“测试节点”发起单节点 OpenVPN 测试",
+			Detail:    "可点击“探测联通性”发起单节点 OpenVPN 探测",
 		}
 	}
 

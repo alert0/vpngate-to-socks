@@ -410,6 +410,23 @@ func (r *Runner) TestServer(ctx context.Context, server vpngate.Server) (vpngate
 	return result, nil
 }
 
+// ProbeConnectivity checks whether the currently connected VPN can reach the
+// configured monitor URL through the SOCKS5 tunnel. It never changes routes or
+// the current connection state.
+func (r *Runner) ProbeConnectivity(ctx context.Context) error {
+	if r == nil || r.socks == nil {
+		return fmt.Errorf("SOCKS5 代理未启动")
+	}
+	if !r.canProxy() {
+		return fmt.Errorf("当前 VPN 尚未连接，无法探测联通性")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	return r.probeMonitor(ctx, false)
+}
+
 func (r *Runner) scanOpenVPNOutput(reader io.Reader) openVPNScanResult {
 	scanner := bufio.NewScanner(reader)
 	lines := make([]string, 0, runnerLogTailLimit)

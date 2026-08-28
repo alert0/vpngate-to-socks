@@ -218,6 +218,20 @@ func (c *Client) TestServer(ctx context.Context, server vpngate.Server) (vpngate
 	return payload.Result, nil
 }
 
+func (c *Client) Probe(ctx context.Context) error {
+	if !c.Enabled() {
+		return fmt.Errorf("Runner 控制接口未配置")
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/probe", nil)
+	if err != nil {
+		return err
+	}
+
+	_, err = c.doConnectRequest(req)
+	return err
+}
+
 func (c *Client) doConnectRequest(req *http.Request) (runner.Status, error) {
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
